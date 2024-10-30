@@ -2,9 +2,16 @@
 
 ## Overview
 
-Chrome’s **App-Bound Encryption (ABE)** was introduced in Google Chrome in version 127 to strengthen the security of sensitive data by binding decryption capabilities to specific applications, preventing misuse by other processes on the system. 
+This tool decrypts **App-Bound Encrypted (ABE)** keys stored in the Local State file of supported Chromium-based browsers, including **Google Chrome, Brave, and Microsoft Edge**. ABE, introduced in Chrome version 127, binds decryption capabilities to specific applications to prevent unauthorized access to sensitive data such as cookies (and potentially passwords and payment information in the future). This tool leverages the internal COM-based **IElevator** service, unique to each browser, to retrieve and decrypt these keys.
 
-This tool decrypts App-Bound encrypted keys stored in Chrome's Local State file, using Chrome’s internal COM-based **IElevator** service. The tool provides a way to retrieve and decrypt these keys, which Chrome protects via App-Bound Encryption (ABE) to prevent unauthorized access to secure data like cookies (and potentially passwords and payment information in the future).
+## Supported and tested Browsers
+
+- Google Chrome (130.0.6723.91)
+- Brave (1.71.118)
+- Microsoft Edge (130.0.2849.56)
+
+> [!NOTE]  
+> This tool should be run from within each browser's application directory due to the path validation constraints of ABE.
 
 ## Prerequisites
 
@@ -22,15 +29,23 @@ cl /EHsc chrome_decrypt.cpp oleaut32.lib shell32.lib advapi32.lib shlwapi.lib
 
 Place the compiled executable within the Chrome application directory (e.g., C:\Program Files\Google\Chrome\Application) due to path validation constraints inherent in Chrome’s ABE.
 Run the executable from the command line:
-```bash
-PS C:\Program Files\Google\Chrome\Application> .\chrome_decrypt.exe
 
+```bash
+PS C:\Program Files\Google\Chrome\Application> .\chrome_decrypt.exe chrome
+PS C:\Program Files\BraveSoftware\Brave-Browser\Application> .\chrome_decrypt.exe brave
+PS C:\Program Files (x86)\Microsoft\Edge\Application> .\chrome_decrypt.exe edge
+```
+
+### Example
+
+```bash
+PS C:\Program Files\Google\Chrome\Application> .\chrome_decrypt.exe chrome
 ----------------------------------------------
 |  Chrome App-Bound Encryption - Decryption  |
 |  Alexander Hagenah (@xaitax)               |
 ----------------------------------------------
 
-[+] Found Chrome Version: 130.0.6723.70
+[+] Found Chrome Version: 130.0.6723.91
 [*] Starting Chrome App-Bound Encryption Decryption process.
 [+] COM library initialized.
 [+] IElevator instance created successfully.
