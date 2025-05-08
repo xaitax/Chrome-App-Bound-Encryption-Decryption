@@ -3,6 +3,9 @@
 > **Purpose**  
 > Decrypt the **App‑Bound Encrypted (ABE)** keys stored in the *Local State* file of Chromium‑based browsers (**Chrome, Brave, Edge**) **without requiring administrative privileges**.
 
+If you find this project useful and want to support my work, I’d really appreciate a coffee:  
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M61EP5XL)
+
 Starting with Chrome 127, Google introduced ABE: cookies (and, in future, passwords & payment data) are encrypted with a key that can only be decrypted by the browser’s own **IElevator** COM service *and* when the calling binary is inside the browser’s installation directory.
 
 This project bypasses that path‑validation requirement by injecting a small DLL into the running browser process and calling IElevator from there, supporting multiple injection methods, verbose debugging, auto‑start, and optional process cleanup and cookie extraction.
