@@ -7,7 +7,7 @@ Starting with Chrome 127, Google introduced ABE: cookies (and, in future, passwo
 
 This project bypasses that path‑validation requirement by injecting a small DLL into the running browser process and calling IElevator from there, supporting multiple injection methods, verbose debugging, auto‑start, and optional process cleanup and cookie extraction.
 
-<img width="929" alt="Chrome-App-Bound-Encryption-Decryption-4" src="https://github.com/user-attachments/assets/31f852b1-39b8-4aea-a2a2-e17aa7770ce3" />
+![image](https://github.com/user-attachments/assets/05cfdb2d-fe2a-4b4f-ab2b-50a46d6486ee)
 
 
 ## 📦 Supported & Tested Versions
