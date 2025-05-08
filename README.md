@@ -21,7 +21,6 @@ This project bypasses that path‑validation requirement by injecting a small DL
 > [!NOTE]  
 > The injector requires the target browser to be **running** unless you use `--start-browser`.
 
-
 ## 🔧 Build Instructions
 
 1. **Clone** the repository and open a *Developer Command Prompt for VS* (or any MSVC‑enabled shell).  
@@ -79,12 +78,12 @@ PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome
 ------------------------------------------------
 |  Chrome App-Bound Encryption Decryption      |
 |  Multi-Method Process Injector               |
-|  Full Cookie Decryption                      |
-|  v0.5 by @xaitax                             |
+|  Cookies / Passwords / Payment Methods       |
+|  v0.6 by @xaitax                             |
 ------------------------------------------------
 
 [*] Chrome not running, launching...
-[+] Chrome (v. 136.0.7103.49) launched w/ PID 18380
+[+] Chrome (v. 136.0.7103.93) launched w/ PID 16768
 [+] DLL injected via NtCreateThreadEx stealth
 [*] Starting Chrome App-Bound Encryption Decryption process.
 
@@ -99,7 +98,9 @@ PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome
 [+] BSTR allocated for encrypted key.
 [+] Decryption successful.
 [+] Decrypted Key: 97fd6072e90096a6f00dc4cb7d9d6d2a7368122614a99e1cc5aa980fbdba886b
-[*] 114 Cookies extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_cookies.txt
+[*] 229 Cookies extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_cookies.txt
+[*] 1 Passwords extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_passwords.txt
+[*] 1 payment methods extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_payments.txt
 [*] Chrome terminated
 ```
 
@@ -186,6 +187,11 @@ Each file is a JSON array of objects:
   …
 ]
 ```
+
+## 🆕 v0.6 Changelog
+
+- **New**: Full Username & Password extraction
+- **New**: Full Payment Information (e.g., Credit Card) extraction
 
 ## 🆕 v0.5 Changelog
 
