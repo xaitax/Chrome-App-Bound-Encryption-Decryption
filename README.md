@@ -1,14 +1,36 @@
 # Chrome App-Bound Encryption Decryption
 
-> **Purpose**  
-> Decrypt the **App‑Bound Encrypted (ABE)** keys stored in the _Local State_ file of Chromium‑based browsers (**Chrome, Brave, Edge**) **without requiring administrative privileges**.
+## 🔍 Overview
 
-If you find this project useful and want to support my work, I’d really appreciate a coffee:  
+Fully decrypt **App-Bound Encrypted (ABE)** cookies, passwords & payment methods from Chromium-based browsers (Chrome, Brave, Edge) — all in user mode, no admin rights required.
+
+If you find this useful, I’d appreciate a coffee:  
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M61EP5XL)
 
-Starting with Chrome 127, Google introduced ABE: cookies (and, in future, passwords & payment data) are encrypted with a key that can only be decrypted by the browser’s own **IElevator** COM service _and_ when the calling binary is inside the browser’s installation directory.
+## 🛡️ Background
 
-This project bypasses that path‑validation requirement by injecting a small DLL into the running browser process and calling IElevator from there, supporting multiple injection methods, verbose debugging, auto‑start, and optional process cleanup and cookie extraction.
+Starting in **Chrome 127+**, Google added App-Bound Encryption to strengthen local data:
+
+1. **Key generation**: a per-profile AES-256-GCM key is created and wrapped by Windows DPAPI.
+2. **Storage**: that wrapped key (Base64-encoded, prefixed with `APPB`) lands in your **Local State** file.
+3. **Unwrapping**: Chrome calls the **IElevator** COM server, but **only** if the caller’s EXE lives in the browser’s install directory.
+
+These path-validation checks prevent any external tool — even with direct DPAPI access — from unwrapping the ABE key.
+
+## 🚀 How It Works
+
+**This project** injects a tiny DLL into the running browser process (via `CreateRemoteThread` or `NtCreateThreadEx`), which then:
+
+- **Runs from inside** the browser’s address space (satisfies IElevator’s install-folder check)
+- **Invokes** the IElevator COM interface directly to unwrap the ABE key
+- **Uses** that key to decrypt cookies, passwords and payment data — all in user land, no elevation needed
+
+### ⚙️ Key Features
+
+- 🔓 Full user-mode decryption & JSON export of cookies, passwords & payment methods
+- 🚧 Stealth DLL injection to bypass path checks & common endpoint defenses
+- 🌐 Works on **Google Chrome**, **Brave** & **Edge** (x64 & ARM64)
+- 🛠️ No admin privileges required
 
 ![image](https://github.com/user-attachments/assets/05cfdb2d-fe2a-4b4f-ab2b-50a46d6486ee)
 
@@ -253,16 +275,36 @@ Each payment file is a JSON array of objects:
 ]
 ```
 
-## 🆕 v0.6 Changelog
+## ⚠️ Potential Issues & Errors
+
+### DecryptData failed. LastError: 2148073483
+
+If you see: `DecryptData failed. LastError: 2148073483`
+
+then in hex that is `0x8009000B`, which maps to **NTE_BAD_KEY_STATE** (“Key not valid for use in specified state”). In practice this almost always means **DPAPI** (the Windows Data Protection API) couldn’t unwrap Chrome’s master key. Common causes:
+
+- **Password change**: your Windows logon password changed after Chrome encrypted its key, so DPAPI can no longer decrypt the old blob.
+- **Wrong profile or machine**: you’re pointing at a Local State from a different user account or another PC.
+- **Elevation mismatch**: if you launch the injector **as Administrator** and point it at a non-elevated user’s profile, DPAPI won’t decrypt because the key is tied to the un-elevated user context.
+
+#### Work-around / Notes
+
+- Ensure you run under the _same_ Windows user account that originally encrypted the Local State.
+- If you’ve recently changed your Windows password, log off and back on (DPAPI will re-encrypt your master key under the new password).
+- There _is_ a recovery path via `IElevator::RunRecoveryCRXElevated(...)`, which can re-wrap keys even if DPAPI fails - but we haven’t included it here to avoid enabling automated key-stealers or malware.
+
+## 🆕 Changelog
+
+### v0.6
 
 - **New**: Full Username & Password extraction
 - **New**: Full Payment Information (e.g., Credit Card) extraction
 
-## 🆕 v0.5 Changelog
+### 🆕 v0.5
 
 - **New**: Full Cookie extraction into JSON format
 
-## 🆕 v0.4 Changelog
+### 🆕 v0.4
 
 - **New**: selectable injection methods (`--method load|nt`)
 - **New**: auto‑start the browser if not running (`--start-browser`)
