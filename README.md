@@ -181,15 +181,15 @@ PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome
 [#] HandleGuard: closing handle 228
 ```
 
-## 🍪 Data Extraction
+## 📂 Data Extraction
 
 Once decryption completes, three JSON files are emitted into your Temp folder:
 
-- **Cookies:** `%TEMP%\<Browser>_decrypt_cookies.txt`
-- **Passwords:** `%TEMP%\<Browser>_decrypt_passwords.txt`
-- **Payment Methods:** `%TEMP%\<Browser>_decrypt_payments.txt`
+- 🍪 **Cookies:** `%TEMP%\<Browser>_decrypt_cookies.txt`
+- 🔑 **Passwords:** `%TEMP%\<Browser>_decrypt_passwords.txt`
+- 💳 **Payment Methods:** `%TEMP%\<Browser>_decrypt_payments.txt`
 
-### Cookie Extraction
+### 🍪 Cookie Extraction
 
 Each cookie file is a JSON array of objects:
 
@@ -209,7 +209,7 @@ Each cookie file is a JSON array of objects:
 ]
 ```
 
-### Password Extraction
+### 🔑 Password Extraction
 
 Each password file is a JSON array of objects:
 
@@ -229,7 +229,7 @@ Each password file is a JSON array of objects:
 ]
 ```
 
-### Payment Method Extraction
+### 💳 Payment Method Extraction
 
 Each payment file is a JSON array of objects:
 
