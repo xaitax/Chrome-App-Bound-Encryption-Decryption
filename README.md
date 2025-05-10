@@ -300,11 +300,11 @@ then in hex that is `0x8009000B`, which maps to **NTE_BAD_KEY_STATE** (“Key no
 - **New**: Full Username & Password extraction
 - **New**: Full Payment Information (e.g., Credit Card) extraction
 
-### 🆕 v0.5
+### v0.5
 
 - **New**: Full Cookie extraction into JSON format
 
-### 🆕 v0.4
+### v0.4
 
 - **New**: selectable injection methods (`--method load|nt`)
 - **New**: auto‑start the browser if not running (`--start-browser`)
