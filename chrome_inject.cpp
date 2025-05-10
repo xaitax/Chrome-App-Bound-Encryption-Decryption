@@ -77,6 +77,78 @@ void print_status(const std::string &tag, const std::string &msg)
     std::cout << " " << msg << std::endl;
 }
 
+static const char *ArchName(USHORT m)
+{
+    switch (m)
+    {
+    case IMAGE_FILE_MACHINE_I386:
+        return "x86";
+    case IMAGE_FILE_MACHINE_AMD64:
+        return "x64";
+    case IMAGE_FILE_MACHINE_ARM64:
+        return "ARM64";
+    default:
+        return "Unknown";
+    }
+}
+
+constexpr USHORT MyArch =
+#if defined(_M_IX86)
+    IMAGE_FILE_MACHINE_I386;
+#elif defined(_M_X64)
+    IMAGE_FILE_MACHINE_AMD64;
+#elif defined(_M_ARM64)
+    IMAGE_FILE_MACHINE_ARM64;
+#else
+    IMAGE_FILE_MACHINE_UNKNOWN;
+#endif
+
+bool GetProcessArchitecture(HANDLE hProc, USHORT &arch)
+{
+    auto fn = (decltype(&IsWow64Process2))
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "IsWow64Process2");
+    if (fn)
+    {
+        USHORT proc, native;
+        if (!fn(hProc, &proc, &native))
+            return false;
+        arch = (proc == IMAGE_FILE_MACHINE_UNKNOWN) ? native : proc;
+        return true;
+    }
+    BOOL wow = FALSE;
+    if (!IsWow64Process(hProc, &wow))
+        return false;
+#if defined(_M_X64)
+    arch = wow ? IMAGE_FILE_MACHINE_I386 : IMAGE_FILE_MACHINE_AMD64;
+#elif defined(_M_ARM64)
+    arch = wow ? IMAGE_FILE_MACHINE_I386 : IMAGE_FILE_MACHINE_ARM64;
+#elif defined(_M_IX86)
+    arch = IMAGE_FILE_MACHINE_I386;
+#else
+    arch = IMAGE_FILE_MACHINE_UNKNOWN;
+#endif
+    return true;
+}
+
+bool CheckArchMatch(HANDLE hProc)
+{
+    USHORT targetArch = IMAGE_FILE_MACHINE_UNKNOWN;
+    if (!GetProcessArchitecture(hProc, targetArch))
+    {
+        print_status("[-]", "Failed to determine target architecture");
+        return false;
+    }
+    if (targetArch != MyArch)
+    {
+        print_status("[-]",
+                     std::string("Architecture mismatch: Injector is ") +
+                         ArchName(MyArch) +
+                         " but target is " + ArchName(targetArch));
+        return false;
+    }
+    return true;
+}
+
 void DisplayBanner()
 {
     SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 12);
@@ -171,7 +243,8 @@ bool InjectWithLoadLibrary(HANDLE proc, const std::string &dllPath)
     HandleGuard th(CreateRemoteThread(proc, nullptr, 0, loader, rem, 0, nullptr));
     if (!th.get())
     {
-        debug("CreateRemoteThread failed");
+        DWORD e = GetLastError();
+        debug("CreateRemoteThread failed: " + std::to_string(e));
         VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
         return false;
     }
@@ -328,17 +401,21 @@ int wmain(int argc, wchar_t *argv[])
             DWORD hv = 0, vs = GetFileVersionInfoSizeW(exePath.c_str(), &hv);
             debug("GetFileVersionInfoSizeW returned size=" + std::to_string(vs));
             std::string ver;
-            if (vs) {
-              std::vector<BYTE> data(vs);
-              if (GetFileVersionInfoW(exePath.c_str(), hv, vs, data.data())) {
-                UINT len = 0; VS_FIXEDFILEINFO *ffi = nullptr;
-                if (VerQueryValueW(data.data(), L"\\", (LPVOID*)&ffi, &len)) {
-                  ver = std::to_string(HIWORD(ffi->dwFileVersionMS)) + "." +
-                        std::to_string(LOWORD(ffi->dwFileVersionMS)) + "." +
-                        std::to_string(HIWORD(ffi->dwFileVersionLS)) + "." +
-                        std::to_string(LOWORD(ffi->dwFileVersionLS));
+            if (vs)
+            {
+                std::vector<BYTE> data(vs);
+                if (GetFileVersionInfoW(exePath.c_str(), hv, vs, data.data()))
+                {
+                    UINT len = 0;
+                    VS_FIXEDFILEINFO *ffi = nullptr;
+                    if (VerQueryValueW(data.data(), L"\\", (LPVOID *)&ffi, &len))
+                    {
+                        ver = std::to_string(HIWORD(ffi->dwFileVersionMS)) + "." +
+                              std::to_string(LOWORD(ffi->dwFileVersionMS)) + "." +
+                              std::to_string(HIWORD(ffi->dwFileVersionLS)) + "." +
+                              std::to_string(LOWORD(ffi->dwFileVersionLS));
+                    }
                 }
-              }
             }
             print_status("[+]", disp + " (v. " + ver + ") launched w/ PID " + std::to_string(pid) + "");
         }
@@ -353,7 +430,7 @@ int wmain(int argc, wchar_t *argv[])
         print_status("[-]", disp + " not running");
         return 1;
     }
-    
+
     std::string mdesc = (method == "nt") ? "NtCreateThreadEx stealth" : "CreateRemoteThread + LoadLibrary";
 
     debug("Opening process PID=" + std::to_string(pid));
@@ -363,6 +440,8 @@ int wmain(int argc, wchar_t *argv[])
         print_status("[-]", "OpenProcess failed");
         return 1;
     }
+    if (!CheckArchMatch(ph.get()))
+        return 1;
     std::string dllPath = GetDllPath();
     if (dllPath.empty())
     {
