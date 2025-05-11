@@ -281,17 +281,23 @@ Each payment file is a JSON array of objects:
 
 If you see: `DecryptData failed. LastError: 2148073483`
 
-then in hex that is `0x8009000B`, which maps to **NTE_BAD_KEY_STATE** (“Key not valid for use in specified state”). In practice this almost always means **DPAPI** (the Windows Data Protection API) couldn’t unwrap Chrome’s master key. Common causes:
+then in hex that’s `0x8009000B`, which corresponds to **NTE_BAD_KEY_STATE** (“Key not valid for use in specified state”). Under the hood this means **DPAPI** (the Windows Data Protection API) couldn’t decrypt the wrapped AES-GCM key stored in Chrome’s Local State.
 
-- **Password change**: your Windows logon password changed after Chrome encrypted its key, so DPAPI can no longer decrypt the old blob.
-- **Wrong profile or machine**: you’re pointing at a Local State from a different user account or another PC.
-- **Elevation mismatch**: if you launch the injector **as Administrator** and point it at a non-elevated user’s profile, DPAPI won’t decrypt because the key is tied to the un-elevated user context.
+#### Common causes  
+- **Password change**  
+  When you change your Windows logon password, Windows re-wraps your DPAPI master key under the new password—but if the old key can’t be decrypted (e.g. missing backup), any older data blobs fail.  
+- **Wrong user or machine**  
+  DPAPI keys are tied to a specific user + machine combo. Pointing at a profile copied from another account or PC will fail.  
+- **Elevation/context mismatch**  
+  If you run the injector as **Administrator** (or SYSTEM) against a non-elevated user’s profile, DPAPI will refuse because the decryption context doesn’t match the interactive user.  
+- **Corrupted or missing DPAPI vault**  
+  If the folder `%APPDATA%\Microsoft\Protect\{SID}` is missing or its permissions broken, DPAPI can’t find your master key.
 
-#### Work-around / Notes
-
-- Ensure you run under the _same_ Windows user account that originally encrypted the Local State.
-- If you’ve recently changed your Windows password, log off and back on (DPAPI will re-encrypt your master key under the new password).
-- There _is_ a recovery path via `IElevator::RunRecoveryCRXElevated(...)`, which can re-wrap keys even if DPAPI fails - but we haven’t included it here to avoid enabling automated key-stealers or malware.
+#### Work-around / Notes  
+- **Run as the same interactive user** (and at the same privilege level) that originally encrypted the Local State.  
+- **Log off & back on** after password changes so Windows can re-encrypt your DPAPI vault.  
+- **Ensure your profile folder hasn’t been moved or restored** from backup without the DPAPI vault.  
+- There _is_ a recovery path via `IElevator::RunRecoveryCRXElevated(...)`, which can re-wrap keys even if DPAPI fails—but it isn’t included here to avoid giving malware an automated bypass.  
 
 ## 🆕 Changelog
 
