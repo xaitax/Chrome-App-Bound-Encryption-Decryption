@@ -305,27 +305,34 @@ Each payment file is a JSON array of objects:
 
 ## ⚠️ Potential Issues & Errors
 
-### DecryptData failed. LastError: 2148073483
+### `DecryptData failed. HRESULT: 0x8004a003. Last COM Error: 8009000b. Decrypted BSTR is null.`
 
-If you see: `DecryptData failed. LastError: 2148073483`
+If you encounter this error message from the DLL's log output, it indicates a failure within Chrome's internal decryption mechanism, specifically when calling the `IElevator::DecryptData` COM method.
 
-then in hex that’s `0x8009000B`, which corresponds to **NTE_BAD_KEY_STATE** (“Key not valid for use in specified state”). Under the hood this means **DPAPI** (the Windows Data Protection API) couldn’t decrypt the wrapped AES-GCM key stored in Chrome’s Local State.
+Let's break down the error codes:
 
-#### Common causes  
-- **Password change**  
-  When you change your Windows logon password, Windows re-wraps your DPAPI master key under the new password—but if the old key can’t be decrypted (e.g. missing backup), any older data blobs fail.  
-- **Wrong user or machine**  
-  DPAPI keys are tied to a specific user + machine combo. Pointing at a profile copied from another account or PC will fail.  
-- **Elevation/context mismatch**  
-  If you run the injector as **Administrator** (or SYSTEM) against a non-elevated user’s profile, DPAPI will refuse because the decryption context doesn’t match the interactive user.  
-- **Corrupted or missing DPAPI vault**  
-  If the folder `%APPDATA%\Microsoft\Protect\{SID}` is missing or its permissions broken, DPAPI can’t find your master key.
+*   **`HRESULT: 0x8004a003`**: This is the COM error code `EPT_S_NOT_REGISTERED`. It typically means that a necessary RPC (Remote Procedure Call) endpoint that the `IElevator` COM object relies upon could not be found, was not registered, or there was an issue with inter-process communication. This could be a primary cause or a contributing factor preventing the `IElevator` object from functioning correctly.
+*   **`Last COM Error: 0x8009000b`** (hexadecimal for `2148073483`): This is the Windows Cryptography API error `NTE_BAD_KEY_STATE` (“Key not valid for use in specified state”). This means DPAPI (the Windows Data Protection API) couldn’t decrypt the wrapped AES-GCM key stored in Chrome’s `Local State` file. The key was likely inaccessible or considered invalid *from the context or state in which the `IElevator` object was trying to use it*.
 
-#### Work-around / Notes  
-- **Run as the same interactive user** (and at the same privilege level) that originally encrypted the Local State.  
-- **Log off & back on** after password changes so Windows can re-encrypt your DPAPI vault.  
-- **Ensure your profile folder hasn’t been moved or restored** from backup without the DPAPI vault.  
-- There _is_ a recovery path via `IElevator::RunRecoveryCRXElevated(...)`, which can re-wrap keys even if DPAPI fails—but it isn’t included here to avoid giving malware an automated bypass.  
+The `EPT_S_NOT_REGISTERED` error might prevent the `IElevator` from establishing the correct operational context or from communicating with other necessary Chrome components, which in turn leads to the `NTE_BAD_KEY_STATE` when it attempts the actual cryptographic decryption.
+
+#### Common Causes
+Many of these relate to the conditions required for DPAPI to successfully operate:
+
+*   When you change your Windows logon password, Windows re-wraps your DPAPI master key under the new password. If the old key can’t be decrypted (e.g., because the system wasn't properly online to sync, or a cached credential issue), any older data blobs protected by it might fail to decrypt until a successful re-encryption cycle.
+*   DPAPI keys are tied to a specific user profile on a specific machine. Attempting to decrypt data from a Chrome profile copied from another user account or another computer will fail.
+*   If you run the injector as **Administrator** (or as the `SYSTEM` account) targeting a Chrome process running as a standard, non-elevated user, DPAPI will likely refuse the decryption. The security context for decryption must match that of the user who originally encrypted the data. The `IElevator` object itself has specific context requirements.
+*   The user's DPAPI master keys are stored in `%APPDATA%\Microsoft\Protect\{SID}` (where `{SID}` is the user's Security Identifier). If this folder is missing, corrupted, or its permissions are incorrect, DPAPI cannot access the necessary keys.
+*   The `IElevator` COM interface and its underlying RPC mechanisms are internal to Chrome. Google can modify their behavior, requirements, or even how they are registered with any Chrome update. This tool might be incompatible with the specific Chrome version you are targeting.
+*   Antivirus, EDR (Endpoint Detection and Response), or other security software might be interfering with the COM/RPC communications, the DLL's ability to interact with `IElevator`, or its access to cryptographic functions and resources.
+
+#### Work-around / Notes
+*   Ensure the injector is run from the *same interactive user account* that owns the Chrome profile and at the *same privilege level* as the target Chrome processes (usually non-elevated).
+*   After a Windows password change, logging off and back on can help ensure DPAPI has correctly re-synchronized and re-encrypted necessary keys.
+*   Ensure the Chrome profile folder (`%LOCALAPPDATA%\Google\Chrome\User Data\`) has not been moved, restored from a backup from another system/user, or had its DPAPI-related files tampered with.
+*   The tool's success can be highly dependent on the Chrome version. Check if this tool version is known to work with your installed Chrome version.
+*   To rule out interference, you might *temporarily* disable security software. Re-enable it immediately after testing.
+*   Chrome has an internal recovery mechanism (`IElevator::RunRecoveryCRXElevated(...)`) that can re-wrap keys if DPAPI fails, but not implemented by this tool to avoid providing an easy bypass for malware.
 
 ## 🆕 Changelog
 
