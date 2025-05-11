@@ -1,9 +1,9 @@
 # Chrome App-Bound Encryption (ABE) - Technical Deep Dive & Research Notes
 
 **Project:** [Chrome App-Bound Encryption Decryption](https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption/)  
-**Author:** Alexander 'xaitax' Hagenah
-**Version:** Based on v0.7.0 analysis, incorporating insights from Google's ABE design documents, public announcements, and related security research.
-**Last Updated:** 11 May 2025
+**Author:** Alexander 'xaitax' Hagenah  
+**Version:** Based on v0.7.0 analysis (incorporating insights from Google's ABE design documents, blogs, and related security research)  
+**Last Updated:** 11 May 2025  
 
 ## 1. Introduction: The Evolution of Local Data Protection in Chrome
 
