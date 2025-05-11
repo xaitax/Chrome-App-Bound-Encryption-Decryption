@@ -32,7 +32,8 @@ These path-validation checks prevent any external tool — even with direct DPAP
 - 🌐 Works on **Google Chrome**, **Brave** & **Edge** (x64 & ARM64)
 - 🛠️ No admin privileges required
 
-![image](https://github.com/user-attachments/assets/05cfdb2d-fe2a-4b4f-ab2b-50a46d6486ee)
+![image](https://github.com/user-attachments/assets/ec899d96-6a95-42b8-8af1-650adb52a9aa)
+
 
 ## 📦 Supported & Tested Versions
 
