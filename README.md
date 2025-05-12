@@ -25,6 +25,19 @@ These path-validation checks prevent any external tool — even with direct DPAP
 - **Invokes** the IElevator COM interface directly to unwrap the ABE key
 - **Uses** that key to decrypt cookies, passwords and payment data — all in user land, no elevation needed
 
+## 🔬 In-Depth Technical Analysis & Research
+
+For a comprehensive understanding of Chrome's App-Bound Encryption, the intricacies of its implementation, the detailed mechanics of this tool's approach, and a broader discussion of related security vectors, please refer to my detailed research paper:
+
+➡️ **[Chrome App-Bound Encryption (ABE) - Technical Deep Dive & Research Notes](RESEARCH.md)**
+
+This document covers:
+- The evolution from DPAPI to ABE.
+- A step-by-step breakdown of the ABE mechanism, including `IElevator` COM interactions and key wrapping.
+- Detailed methodology of the DLL injection strategy used by this tool.
+- Analysis of encrypted data structures and relevant Chromium source code insights.
+- Discussion of alternative decryption vectors and Chrome's evolving defenses.
+
 ### ⚙️ Key Features
 
 - 🔓 Full user-mode decryption & JSON export of cookies, passwords & payment methods
