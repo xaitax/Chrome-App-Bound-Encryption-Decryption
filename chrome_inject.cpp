@@ -1,5 +1,5 @@
 // chrome_inject.cpp
-// v0.7.0 (c) Alexander 'xaitax' Hagenah
+// v0.8.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
@@ -246,7 +246,7 @@ void DisplayBanner()
     std::cout << "|  Chrome App-Bound Encryption Decryption      |" << std::endl;
     std::cout << "|  Multi-Method Process Injector               |" << std::endl;
     std::cout << "|  Cookies / Passwords / Payment Methods       |" << std::endl;
-    std::cout << "|  v0.7.0 by @xaitax                           |" << std::endl;
+    std::cout << "|  v0.8.0 by @xaitax                           |" << std::endl;
     std::cout << "------------------------------------------------" << std::endl
               << std::endl;
     SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);

