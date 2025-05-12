@@ -1,9 +1,37 @@
 # Chrome App-Bound Encryption (ABE) - Technical Deep Dive & Research Notes
 
 **Project:** [Chrome App-Bound Encryption Decryption](https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption/)  
-**Author:** Alexander 'xaitax' Hagenah
-**Version:** Based on v0.7.0 analysis, incorporating insights from Google's ABE design documents, public announcements, and related security research.
-**Last Updated:** 11 May 2025
+**Author:** Alexander 'xaitax' Hagenah    
+**Last Updated:** 12 May 2025  
+
+Based on my project's v0.7.0 analysis, incorporating insights from Google's ABE design documents, public announcements, Chromium source code, and related security research.
+
+**Table of Contents**
+
+- [1. Introduction: The Evolution of Local Data Protection in Chrome](#1-introduction-the-evolution-of-local-data-protection-in-chrome)
+  - [1.1. Core Tenets of ABE (as per Google's Design)](#11-core-tenets-of-abe-as-per-googles-design)
+- [2. The ABE Mechanism: A Step-by-Step Breakdown](#2-the-abe-mechanism-a-step-by-step-breakdown)
+- [3. Circumventing ABE Path Validation: The `chrome-inject` Strategy](#3-circumventing-abe-path-validation-the-chrome-inject-strategy)
+  - [3.1. The Methodology](#31-the-methodology)
+  - [3.2. Operational Context: User-Mode, No Administrative Rights Required](#32-operational-context-user-mode-no-administrative-rights-required)
+- [4. Dissecting Encrypted Data Structures](#4-dissecting-encrypted-data-structures)
+  - [4.1. `Local State` and the `app_bound_encrypted_key`](#41-local-state-and-the-app_bound_encrypted_key)
+  - [4.2. AES-GCM Blob Format (Cookies, Passwords, Payments, etc.)](#42-aes-gcm-blob-format-cookies-passwords-payments-etc)
+  - [4.3. Cookie Value Specifics (from `encrypted_value` in `Cookies` DB)](#43-cookie-value-specifics-from-encrypted_value-in-cookies-db)
+  - [4.4. Passwords (from `password_value` in `Login Data` DB) & Payment Information](#44-passwords-from-password_value-in-login-data-db--payment-information)
+- [5. Alternative Decryption Vectors & Chrome's Evolving Defenses](#5-alternative-decryption-vectors--chromes-evolving-defenses)
+  - [5.1. Administrator-Level Decryption (e.g., `runassu/chrome_v20_decryption` PoC)](#51-administrator-level-decryption-eg-runassuchrome_v20_decryption-poc)
+  - [5.2. Remote Debugging Port (`--remote-debugging-port`) and Its Mitigation](#52-remote-debugging-port---remote-debugging-port-and-its-mitigation)
+  - [5.3. Device Bound Session Credentials (DBSC)](#53-device-bound-session-credentials-dbsc)
+- [6. Key Insights from Google's ABE Design Document & Chromium Source Code](#6-key-insights-from-googles-abe-design-document--chromium-source-code)
+- [7. Operational Considerations and Limitations of this tool](#7-operational-considerations-and-limitations-of-this-tool)
+  - [7.1. Browser Process Termination (`KillBrowserProcesses`)](#71-browser-process-termination-killbrowserprocesses)
+  - [7.2. Multi-Profile Support](#72-multi-profile-support)
+  - [7.3. Roaming Profiles and Enterprise Environments](#73-roaming-profiles-and-enterprise-environments)
+- [8. Conclusion and Future Directions for ABE Research](#8-conclusion-and-future-directions-for-abe-research)
+- [9. References and Further Reading](#9-references-and-further-reading)
+
+---
 
 ## 1. Introduction: The Evolution of Local Data Protection in Chrome
 
