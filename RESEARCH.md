@@ -1,9 +1,37 @@
 # Chrome App-Bound Encryption (ABE) - Technical Deep Dive & Research Notes
 
 **Project:** [Chrome App-Bound Encryption Decryption](https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption/)  
-**Author:** Alexander 'xaitax' Hagenah
-**Version:** Based on v0.7.0 analysis, incorporating insights from Google's ABE design documents, public announcements, and related security research.
-**Last Updated:** 11 May 2025
+**Author:** Alexander 'xaitax' Hagenah    
+**Last Updated:** 12 May 2025  
+
+Based on my projects v0.7.0 analysis, incorporating insights from Google's ABE design documents, public announcements, Chromium source code, and related security research.
+
+**Table of Contents**
+
+- [1. Introduction: The Evolution of Local Data Protection in Chrome](#1-introduction-the-evolution-of-local-data-protection-in-chrome)
+  - [1.1. Core Tenets of ABE (as per Google's Design)](#11-core-tenets-of-abe-as-per-googles-design)
+- [2. The ABE Mechanism: A Step-by-Step Breakdown](#2-the-abe-mechanism-a-step-by-step-breakdown)
+- [3. Circumventing ABE Path Validation: The `chrome-inject` Strategy](#3-circumventing-abe-path-validation-the-chrome-inject-strategy)
+  - [3.1. The Methodology](#31-the-methodology)
+  - [3.2. Operational Context: User-Mode, No Administrative Rights Required](#32-operational-context-user-mode-no-administrative-rights-required)
+- [4. Dissecting Encrypted Data Structures](#4-dissecting-encrypted-data-structures)
+  - [4.1. `Local State` and the `app_bound_encrypted_key`](#41-local-state-and-the-app_bound_encrypted_key)
+  - [4.2. AES-GCM Blob Format (Cookies, Passwords, Payments, etc.)](#42-aes-gcm-blob-format-cookies-passwords-payments-etc)
+  - [4.3. Cookie Value Specifics (from `encrypted_value` in `Cookies` DB)](#43-cookie-value-specifics-from-encrypted_value-in-cookies-db)
+  - [4.4. Passwords (from `password_value` in `Login Data` DB) & Payment Information](#44-passwords-from-password_value-in-login-data-db--payment-information)
+- [5. Alternative Decryption Vectors & Chrome's Evolving Defenses](#5-alternative-decryption-vectors--chromes-evolving-defenses)
+  - [5.1. Administrator-Level Decryption (e.g., `runassu/chrome_v20_decryption` PoC)](#51-administrator-level-decryption-eg-runassuchrome_v20_decryption-poc)
+  - [5.2. Remote Debugging Port (`--remote-debugging-port`) and Its Mitigation](#52-remote-debugging-port---remote-debugging-port-and-its-mitigation)
+  - [5.3. Device Bound Session Credentials (DBSC)](#53-device-bound-session-credentials-dbsc)
+- [6. Key Insights from Google's ABE Design Document & Chromium Source Code](#6-key-insights-from-googles-abe-design-document--chromium-source-code)
+- [7. Operational Considerations and Limitations of this tool](#7-operational-considerations-and-limitations-of-this-tool)
+  - [7.1. Browser Process Termination (`KillBrowserProcesses`)](#71-browser-process-termination-killbrowserprocesses)
+  - [7.2. Multi-Profile Support](#72-multi-profile-support)
+  - [7.3. Roaming Profiles and Enterprise Environments](#73-roaming-profiles-and-enterprise-environments)
+- [8. Conclusion and Future Directions for ABE Research](#8-conclusion-and-future-directions-for-abe-research)
+- [9. References and Further Reading](#9-references-and-further-reading)
+
+---
 
 ## 1. Introduction: The Evolution of Local Data Protection in Chrome
 
@@ -14,7 +42,7 @@ To counter this, Google introduced **App-Bound Encryption (ABE)** in Chrome (pub
 ### 1.1. Core Tenets of ABE (as per Google's Design)
 
 - **Primary Goal:** Prevent an attacker operating with the _same privilege level as Chrome_ from trivially calling DPAPI to decrypt sensitive data.
-- **Acknowledged Limitations (Non-Goals):** ABE does not aim to prevent attackers with _higher privileges_ (Administrator, SYSTEM, kernel drivers) or those who can successfully _inject code into Chrome_. The official Google design documents explicitly recognize code injection as a potent bypass vector. A technique this project leverages for legitimate research and data recovery demonstrations.
+- **Acknowledged Limitations (Non-Goals):** ABE does not aim to prevent attackers with _higher privileges_ (Administrator, SYSTEM, kernel drivers) or those who can successfully _inject code into Chrome_. The official Google design documents explicitly recognize code injection as a potent bypass vector, a technique this project leverages for legitimate research and data recovery demonstrations.
 - **Underlying Mechanism:** ABE introduces an intermediary COM service (part of Chrome's Elevation Service) that acts as a gatekeeper for the DPAPI-unwrapping of a critical session key. This service verifies the "app identity" of the caller.
 - **Initial Identity Verification Method:** The first iteration relies on **path validation** of the calling executable. While digital signature validation was considered, path validation was chosen for the initial rollout to "descope the complexity" (as noted in a 2024 update to Google's design document), deemed sufficient against the immediate threat model.
 
@@ -29,44 +57,49 @@ ABE employs a multi-layered strategy for key management and data encryption:
 
 1.  **The `app_bound_key` (Session Key):**
 
-    - A unique 32-byte AES-256 key is generated. This key appears to be scoped per Chrome user data directory, meaning it would protect data across multiple profiles within that directory.
-    - This key is the ultimate symmetric workhorse, used for AES-256-GCM encryption and decryption of the actual sensitive data items (cookies, passwords, etc.).
+    - A unique 32-byte AES-256 key is the target plaintext that applications like Chrome's `OSCrypt` use.
+    - This key is what this project aims to recover for subsequent data decryption.
 
-2.  **DPAPI Wrapping of the `app_bound_key`:**
+2.  **Generation of `validation_data` and `app_bound_key` Wrapping (During Encryption by Chrome):**
 
-    - The AES-256 `app_bound_key` is itself encrypted using the standard Windows DPAPI (`CryptProtectData`), binding its accessibility to the user's current logon session and machine.
+    - When Chrome (via `OSCrypt`) needs to protect the `app_bound_key` using ABE, it calls the `IElevator::EncryptData` COM method.
+    - **Caller Validation Data Generation:** Inside `IElevator::EncryptData`, the service first generates `validation_data`. If `ProtectionLevel::PROTECTION_PATH_VALIDATION` is specified, this involves:
+      - Obtaining the calling process's executable path (`GetProcessExecutablePath`).
+      - Normalizing this path using a specific routine (`MaybeTrimProcessPath`), which removes the .exe name, common temporary/application subfolders (like "Application", "Temp", version strings), and standardizes "Program Files (x86)" to "Program Files". This results in a canonical base installation path.
+      - This normalized path string (UTF-8 encoded) becomes the core of the `validation_data`. The `ProtectionLevel` itself is also prepended to this data.
+    - **Payload Construction:** The `validation_data` (with its length) is prepended to the plaintext `app_bound_key` (also with its length). This forms the `data_to_encrypt`.
+    - **User-Context DPAPI Encryption:** This `data_to_encrypt` blob is then encrypted using `CryptProtectData` under the calling user's DPAPI context (achieved via `ScopedClientImpersonation`).
+    - **System-Context DPAPI Encryption (Outer Layer):** The result from the user-context DPAPI encryption is then encrypted _again_ using `CryptProtectData`, this time under the SYSTEM DPAPI context (or the service's own context if not explicitly SYSTEM). This creates a "DPAPI-ception" or layered DPAPI protection.
+    - This doubly DPAPI-wrapped blob is what `IElevator::EncryptData` returns as the `ciphertext` BSTR.
 
 3.  **Storage in `Local State`:**
 
-    - The DPAPI-wrapped `app_bound_key` is then Base64-encoded.
-    - A characteristic 4-byte prefix, **`APPB`** (ASCII: `0x41 0x50 0x50 0x42`), is prepended to this Base64 string.
-    - This final, prefixed string is stored in the `Local State` JSON file (typically found at `User Data\Local State`) under the key `os_crypt.app_bound_encrypted_key`.
+    - The `ciphertext` BSTR received from `IElevator::EncryptData` is Base64-encoded.
+    - The prefix **`APPB`** (ASCII: `0x41 0x50 0x50 0x42`) is prepended.
+    - This final string is stored in `Local State` as `os_crypt.app_bound_encrypted_key`.
 
-4.  **The `IElevator` COM Service (The Gatekeeper):**
+4.  **The `IElevator` COM Service (The Gatekeeper for Decryption):**
 
-    - When Chrome needs the plaintext `app_bound_key`, its internal `OSCrypt` component no longer directly calls `CryptUnprotectData` on the blob from `Local State`.
-    - Instead, it instantiates a COM object that implements an interface (referred to generically as `IElevator`). This service is an integral part of Chrome's "Elevation Service" infrastructure.
-    - The CLSIDs and IIDs for this service are crucial and browser-specific:
-      - **Google Chrome:**
-        - CLSID: `{708860E0-F641-4611-8895-7D867DD3675B}`
-        - IID: `{463ABECF-410D-407F-8AF5-0DF35A005CC8}`
-      - **Brave Browser:**
-        - CLSID: `{576B31AF-6369-4B6B-8560-E4B203A97A8B}`
-        - IID: `{F396861E-0C8E-4C71-8256-2FAE6D759C9E}`
-    - Chrome's `OSCrypt` passes the raw DPAPI-wrapped blob (post-Base64 decoding and `APPB` prefix removal) to the `IElevator::DecryptData` method.
+    - When Chrome (or this project's injected DLL) needs the plaintext `app_bound_key`:
+    - It instantiates the `IElevator` COM object using browser-specific CLSIDs/IIDs:
+      - **Google Chrome:** CLSID: `{708860E0-F641-4611-8895-7D867DD3675B}`, IID: `{463ABECF-410D-407F-8AF5-0DF35A005CC8}`
+      - **Brave Browser:** CLSID: `{576B31AF-6369-4B6B-8560-E4B203A97A8B}`, IID: `{F396861E-0C8E-4C71-8256-2FAE6D759C9E}`
+    - The `APPB`-prefixed, Base64-encoded string from `Local State` is decoded and the `APPB` prefix stripped. This resulting blob (the doubly DPAPI-wrapped key) is passed to `IElevator::DecryptData`.
 
-5.  **Path Validation by `IElevator`:**
+5.  **Unwrapping and Path Validation by `IElevator::DecryptData`:**
 
-    - This is the linchpin of ABE's app-binding. The `IElevator` COM server, before proceeding with the DPAPI decryption, **verifies the executable path of the calling process.**
-    - If the caller's `.exe` is not located within the browser's legitimate installation directory (e.g., `C:\Program Files\Google\Chrome\Application\`), the `DecryptData` call is designed to fail. This aims to ensure only bona fide Chrome code can request the unwrapping of the `app_bound_key`.
+    - **System-Context DPAPI Decryption:** The input blob is first decrypted using `CryptUnprotectData` under the SYSTEM DPAPI context. This removes the outer DPAPI layer.
+    - **User-Context DPAPI Decryption:** The intermediate result is then decrypted using `CryptUnprotectData` under the _calling user's_ DPAPI context (via `ScopedClientImpersonation`). This removes the inner DPAPI layer, yielding a plaintext blob.
+    - **Extraction of Validation Data and Plaintext Key:** This plaintext blob is structured as `[validation_data_length][validation_data][app_bound_key_length][app_bound_key]`. The service uses `PopFromStringFront` to extract the original `validation_data` and then the `app_bound_key`.
+    - **Path Validation:** The extracted `validation_data` (containing the original encrypting process's normalized path and `ProtectionLevel`) is then validated against the _current calling process_. The service gets the current caller's path, normalizes it using the same `MaybeTrimProcessPath` logic, and compares it.
+    - If path validation passes, `IElevator::DecryptData` returns the extracted plaintext 32-byte `app_bound_key`.
 
 6.  **Data Encryption/Decryption using the `app_bound_key`:**
-    - If path validation is successful and `IElevator::DecryptData` manages to unwrap the `app_bound_key` (meaning the DPAPI call within the service succeeded), the plaintext 32-byte AES key is returned to the `OSCrypt` component.
-    - `OSCrypt` then employs this key for AES-256-GCM operations on cookies, passwords, etc. These encrypted data blobs are typically identifiable by a version prefix (e.g., `v20`).
+    - Chrome's `OSCrypt` (or this project's DLL) then uses this recovered 32-byte AES key with AES-256-GCM to encrypt/decrypt actual user data (cookies, passwords), which are typically prefixed (e.g., `v20`).
 
 ## 3. Circumventing ABE Path Validation: The `chrome-inject` Strategy
 
-The `chrome_inject.exe` and `chrome_decrypt.dll` tools developed in this project effectively bypass the ABE path validation by orchestrating the sensitive COM calls to execute _from within the legitimate browser's own process space_. This approach aligns with the "Weaknesses" section of Google's ABE design document (Page 7), which explicitly notes: _"An attacker could inject code into Chrome browser and call the IPC interface."_ This project implements such a technique, not for malicious purposes, but for security research, data recovery exploration, and, for me, as a fascinating practical learning exercise in Windows internals, COM, and process manipulation.
+The `chrome_inject.exe` and `chrome_decrypt.dll` tools developed in this project effectively bypass ABE's path validation by orchestrating the sensitive COM calls to `IElevator::DecryptData` to execute _from within the legitimate browser's own process space_. This approach aligns with the "Weaknesses" section of Google's ABE design document (Page 7), which explicitly notes: _"An attacker could inject code into Chrome browser and call the IPC interface."_ This project implements such a technique, not for malicious purposes, but for security research, data recovery exploration, and, for me, as a fascinating practical learning exercise in Windows internals, COM, and process manipulation.
 
 ### 3.1. The Methodology
 
@@ -115,7 +148,7 @@ A key characteristic of this project's methodology is that it operates entirely 
 
 - **Typical Location:** `%LOCALAPPDATA%\<BrowserVendor>\<BrowserName>\User Data\Local State` (e.g., `Google\Chrome\User Data\Local State`).
 - **Relevant JSON Key:** `os_crypt.app_bound_encrypted_key`.
-- **Format:** A string value: `"APPB<Base64EncodedDPAPIWrappedAESKey>"`.
+- **Format:** A string value: `"APPB<Base64EncodedSystemDPAPIWrappedUserDPAPIWrappedValidationDataAndKey>"`.
 
 ### 4.2. AES-GCM Blob Format (Cookies, Passwords, Payments, etc.)
 
@@ -141,15 +174,17 @@ Data items encrypted with the `app_bound_key` generally adhere to a consistent f
 
 ### 5.1. Administrator-Level Decryption (e.g., `runassu/chrome_v20_decryption` PoC)
 
-The proof-of-concept by `runassu` illustrates that if an attacker possesses **Administrator privileges**, the `app_bound_key` can potentially be decrypted. This aligns with ABE's stated non-goal of protecting against higher-privilege attackers. The method described involves:
+The proof-of-concept by `runassu` illustrates that if an attacker possesses **Administrator privileges**, the `app_bound_key` can potentially be decrypted. This aligns with ABE's stated non-goal of protecting against higher-privilege attackers.
 
-1.  Decrypting the `app_bound_encrypted_key` from `Local State` first using the SYSTEM DPAPI context, and then subsequently using the user's DPAPI context. This "double DPAPI" step is an intriguing detail, possibly related to how `elevation_service.exe` internally manages or protects the key it handles.
-2.  The result of this double DPAPI decryption is _not_ the final `app_bound_key`. Instead, it's reported to be another encrypted blob containing metadata (like the Chrome installation path), a flag, an IV, a 32-byte ciphertext, and an authentication tag.
-3.  This intermediate blob is then purportedly decrypted using AES-256-GCM with a **key hardcoded within `elevation_service.exe` itself**.
-4.  The plaintext resulting from _this_ second-stage decryption is the final 32-byte `app_bound_key`.
+    1.  The PoC's description of needing to decrypt the `app_bound_encrypted_key` from `Local State` first with SYSTEM DPAPI, then user DPAPI, **directly matches** the initial steps within the legitimate `IElevator::DecryptData` function as seen in `elevator.cc`. An administrator can perform these steps outside of the `IElevator` service.
+    2.  After these two DPAPI unwrap steps, the result would be the `[validation_data_length][validation_data][app_bound_key_length][app_bound_key]` plaintext. An admin tool could then simply parse this structure to extract the `app_bound_key` directly, without needing to perform path validation.
+    3.  The `runassu` PoC's claim that this result is "*not* the final `app_bound_key`" and requires a *further* AES-GCM decryption with a key hardcoded in `elevation_service.exe` is intriguing.
+        *   This additional layer is **not** part of the standard `IElevator::DecryptData` flow for returning the `app_bound_key` to `OSCrypt`, as evidenced by `elevator.cc`. The `plaintext_str` returned by `IElevator::DecryptData` *is* the application-level key.
+        *   The PoC's extra step might be attempting to decrypt data that has undergone an additional, internal transformation within Chrome, possibly related to the `PreProcessData`/`PostProcessData` functions seen in `elevator.cc` (conditionally compiled with `BUILDFLAG(GOOGLE_CHROME_BRANDING)`). These functions might apply another layer of encryption using a service-internal key for specific branded builds or key versions.
+        *   Alternatively, the PoC might be targeting a different internal key or an older/variant ABE scheme.
 
-- **Hardcoded Keys in `elevation_service.exe`:** The PoC mentions specific hardcoded keys within `elevation_service.exe`, one for ChaCha20_Poly1305 (reportedly for Chrome 133+) and another for AES-256-GCM (e.g., `B31C6E241AC846728DA9C1FAC4936651CFFB944D143AB816276BCC6DA0284787`).
-- **Stability Concerns:** This administrator-level method is highly dependent on the internal implementation details of `elevation_service.exe` (such as hardcoded keys and intermediate blob formats). These are undocumented and subject to change without notice in Chrome updates, making this approach inherently less stable than interacting with the defined `IElevator` COM interface. Furthermore, it necessitates administrative rights, a higher bar than the user-mode injection technique employed by this project.
+- **Hardcoded Keys in `elevation_service.exe`:** The presence of hardcoded keys in `elevation_service.exe` (as mentioned by the PoC for ChaCha20_Poly1305 or AES-256-GCM) would most likely be for such internal service operations or specific recovery mechanisms, rather than the primary ABE flow that returns the key to `OSCrypt`.
+- **Stability Concerns:** Relying on such internal administrator-level method, undocumented layers and hardcoded keys is highly unstable and prone to break with Chrome updates. The method employed by this project (injecting and calling the official `IElevator::DecryptData` COM interface) is more aligned with the intended client interaction path and thus inherently more stable, despite the injection vector.
 
 ### 5.2. Remote Debugging Port (`--remote-debugging-port`) and Its Mitigation
 
@@ -165,19 +200,62 @@ As an overlapping and complementary security effort, Google has been developing 
 - **Mechanism:** When a DBSC session is initiated, the browser generates a public-private key pair, storing the private key securely (ideally using hardware like a TPM). The server associates the session with the public key. Periodically, the browser proves possession of the private key to refresh the (typically short-lived) session cookie.
 - **Relevance to ABE:** While ABE protects data at rest on the user's device, DBSC focuses on making stolen session cookies useless if exfiltrated and used on another device. They are two distinct but synergistic layers of defense against session hijacking. An attacker bypassing ABE to get cookies might still find those cookies unusable elsewhere if they are DBSC-protected.
 
-## 6. Key Insights from Google's ABE Design Document ("Chrome app-bound encryption Service")
+## 6. Key Insights from Google's ABE Design Document & Chromium Source Code
 
-Google's internal design document for ABE (formerly "Chrome Elevated Data Service") provides invaluable context:
+Insights from Google's design documents and the Chromium source code (`elevator.h`, `elevator.cc`, `caller_validation.h`, `caller_validation.cc`) provide a comprehensive understanding:
 
 - **Original Intent vs. Implemented Reality (Path vs. Signature Validation):** The initial proposal (Page 4 of the design doc) contemplated validating the _digital signature_ of both the calling process and the `IElevator` service executable. However, an "Update (2024)" note clarifies that the project was descoped to use **path validation** for the initial implementation, primarily for simplicity, with the assessment that it offered "equivalent protection against a non-admin attacker" for the prevailing threat models at the time.
 - **`OSCrypt` Module Modifications:** The core `components/os_crypt` module within Chromium was slated to be augmented. Instead of making direct DPAPI calls, it would use new IPC mechanisms to communicate with the Elevation Service (Pages 2, 5). The design proposed that `OSCrypt` would iterate through a list of "key encryption delegates" - one for legacy DPAPI keys, another for ABE-protected keys via IPC - to find a delegate capable of decrypting a given key (Page 6).
 - **Stateless Nature of the Service:** The `IElevator` service, in its role for ABE, is designed as a largely stateless encrypt/decrypt primitive. It doesn't require its own persistent storage for ABE operations (Page 4).
 - **Explicit Acknowledgment of Injection as a Bypass:** Page 7 ("Weaknesses") of the design document candidly states: _"An attacker could inject code into Chrome browser and call the IPC interface. It would be hard to defeat a determined attacker using this technique..."_ This project serves as a practical validation of this assessment.
-- **Considerations for Future Enhancements ("Follow-up work," Page 11):**
-  - Implementing stronger caller provenance checks (e.g., thread stack examination, code integrity checks on the calling module).
-  - Potentially moving the service to run as LocalSystem for increased isolation (though user-data decryption would still rely on user-context DPAPI).
-  - Using `CryptProtectMemory` for the in-memory `os_crypt` master key to protect it from inter-process reads (marked as "done" in the document).
-  - Emitting event logs for unauthorized IPC calls (marked as "done"). This corresponds to the Event ID 257 (Source: 'Chrome') in the Windows Application Log, mentioned in Google's public blog post, which signals a failed ABE verification.
+- **Understanding the `IElevator` COM Interface and its Definition:**
+    - The `IElevator` interface is a standard Windows **COM (Component Object Model)** interface. Such interfaces define a contract between a service provider (like Chrome's Elevation Service) and a client (like Chrome's `OSCrypt` module, or in this project's case, the injected `chrome_decrypt.dll`).
+    - This contract is formally specified using **MIDL (Microsoft Interface Definition Language)**. An `.idl` file written in MIDL describes the methods, parameters, and data types. The MIDL compiler processes this `.idl` file to generate C/C++ header files (defining the interface structure for compilers) and a type library (`.tlb`) that describes the interface's binary layout. It also generates proxy/stub code that enables COM to transparently manage communication between the client and server, even if they are in different processes.
+    - While this project's `chrome_decrypt.dll` contains a C++ stub for `IElevator` (using the `MIDL_INTERFACE` macro), this serves as a compile-time declaration of the interface's shape. The crucial elements for runtime interaction are the correct CLSID (to identify the COM component) and IID (to request the specific `IElevator` interface pointer) passed to `CoCreateInstance`.
+    - The `IElevator` interface, as potentially defined by Chrome, would include methods like `EncryptData` and `DecryptData`. An illustrative C++ stub, similar to what's in `chrome_decrypt.cpp`, is:
+        ```cpp
+        // Illustrative C++ MIDL_INTERFACE definition stub from chrome_decrypt.cpp
+        MIDL_INTERFACE("A949CB4E-C4F9-44C4-B213-6BF8AA9AC69C") 
+        IElevator : public IUnknown
+        {
+        public:
+            // Method for Chrome's recovery mechanisms, not directly used for decryption by this tool.
+            virtual HRESULT STDMETHODCALLTYPE RunRecoveryCRXElevated(
+                const WCHAR *crx_path, const WCHAR *browser_appid, /* ...other params... */) = 0; 
+            
+            // Method used by Chrome to initially encrypt the app_bound_key.
+            virtual HRESULT STDMETHODCALLTYPE EncryptData(
+                ProtectionLevel protection_level, // Specifies the type of protection to apply
+                const BSTR plaintext,
+                BSTR *ciphertext,
+                DWORD *last_error) = 0;
+            
+            // The key method utilized by this tool to decrypt the app_bound_key.
+            virtual HRESULT STDMETHODCALLTYPE DecryptData(
+                const BSTR ciphertext, // DPAPI-wrapped app_bound_key blob from Local State
+                BSTR *plaintext,      // Output: raw 32-byte app_bound_key
+                DWORD *last_error) = 0; // Propagates underlying errors (e.g., from DPAPI)
+        };
+        ```
+    - The `EncryptData` method, though not called by this decryption tool, would likely use an enum like `ProtectionLevel` to dictate the security measures applied during the encryption of the `app_bound_key`. This project includes such an enum in `chrome_decrypt.cpp`:
+        ```cpp
+        // From elevation_service_idl.h (implicitly, via project's chrome_decrypt.cpp stub)
+        enum class ProtectionLevel // As used by IElevator
+        {
+            PROTECTION_NONE = 0,
+            PROTECTION_PATH_VALIDATION_OLD = 1, // An older path validation scheme
+            PROTECTION_PATH_VALIDATION = 2,    // The ABE path validation relevant to this research
+            PROTECTION_MAX = 3                 // Boundary for valid levels
+        };
+        ```
+    - By specifying `ProtectionLevel::PROTECTION_PATH_VALIDATION` during the `EncryptData` call, Chrome instructs the `IElevator` service to enforce the path validation check when creating the `app_bound_encrypted_key`. The `DecryptData` method, subsequently used by this tool, implicitly respects the protection level that was originally applied during encryption.
+  - The `IElevator::EncryptData` method, when called by Chrome with `ProtectionLevel::PROTECTION_PATH_VALIDATION`, generates caller-specific `validation_data` (based on the normalized path of Chrome itself), prepends this to the actual `app_bound_key`, and then encrypts this combined payload twice with DPAPI (first user-context, then system-context).
+  - The `IElevator::DecryptData` method reverses this: decrypts twice with DPAPI (first system-context, then user-context), extracts the `validation_data` and the `app_bound_key`, performs path validation using the extracted `validation_data` against the current caller, and returns the `app_bound_key` if valid. This project's tool correctly utilizes this returned key.
+- **Path Normalization (`MaybeTrimProcessPath` in `caller_validation.cc`):** A critical detail for `ProtectionLevel::PROTECTION_PATH_VALIDATION` is that the validation does not use the raw executable path. Instead, `MaybeTrimProcessPath` normalizes it by:
+  1. Removing the executable filename (e.g., `chrome.exe`).
+  2. Conditionally removing trailing directory components if they match "Temp", "Application", or a version string (e.g., `127.0.0.0`).
+  3. Standardizing `Program Files (x86)` to `Program Files`.
+     This ensures that different Chrome versions or temporary unpack locations within the same sanctioned base installation directory can still validate successfully.
 
 ## 7. Operational Considerations and Limitations of this tool
 
