@@ -45,6 +45,15 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
     *   How this insight led to tailored C++ interface stubs for successful interaction with Edge's ABE service.
     *   A practical look at debugging tricky COM interoperability issues.
 
+3.  ➡️ **[COMrade ABE: Your Field Manual for App-Bound Encryption's COM Underbelly](COMrade_ABE_Field_Manual.md)**
+
+    This field manual introduces **COMrade ABE**, a Python-based dynamic analyzer for ABE COM interfaces, and dives into its practical applications:
+    *   Explains the necessity for dynamic COM interface analysis due to browser variations and updates.
+    *   Details COMrade ABE's methodology: registry scanning for service discovery, Type Library loading and parsing, and heuristic-based ABE method signature matching.
+    *   Provides a comprehensive guide to interpreting COMrade ABE's output, including CLSIDs, IIDs (standard and C++ style), and the significance of verbose output details like VTable offsets, defining interfaces, and full inheritance chains.
+    *   Highlights the utility of the auto-generated C++ stubs (`--output-cpp-stub`) for rapid development and research.
+    *   Discusses how COMrade ABE aids in adapting to ABE changes, analyzing new Chromium browsers, and understanding vendor-specific COM customizations.
+
 ### ⚙️ Key Features
 
 - 🔓 Full user-mode decryption & JSON export of cookies, passwords & payment methods
