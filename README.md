@@ -97,9 +97,9 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
 
 3. **Compile the DLL** (responsible for the decryption logic):
 
-  ```bash
-  cl /EHsc /std:c++17 /LD /O2 /MT /Ilibs\sqlite src\chrome_decrypt.cpp libs\sqlite\sqlite3.lib bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /link /OUT:chrome_decrypt.dll
-  ```
+   ```bash
+   cl /EHsc /std:c++17 /LD /O2 /MT /Ilibs\sqlite src\chrome_decrypt.cpp libs\sqlite\sqlite3.lib bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /link /OUT:chrome_decrypt.dll
+   ```
 
 4. **Compile the injector** (responsible for DLL injection & console UX):
 
