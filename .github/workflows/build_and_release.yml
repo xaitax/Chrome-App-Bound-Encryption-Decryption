@@ -20,7 +20,7 @@ jobs:
             platform_toolset_arg: x64
             output_suffix: x64
           - architecture: arm64
-            platform_toolset_arg: x64_arm64
+            platform_toolset_arg: x64_arm64 # Cross-compiling for ARM64 on an x64 runner
             output_suffix: arm64
 
     steps:
@@ -72,12 +72,15 @@ jobs:
 
   create_release:
     name: Create GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v') # Only run for version tags
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
 
+    outputs:
+      release_url: ${{ steps.create_release.outputs.html_url }}
+
     steps:
-      - name: Checkout repository (for release notes, etc. - optional)
+      - name: Checkout repository 
         uses: actions/checkout@v4
 
       - name: Download x64 binaries
@@ -99,32 +102,38 @@ jobs:
           echo "----------------------------------------"
 
       - name: Create ZIP archives
+        id: zip_packages 
         shell: bash
         run: |
-          VERSION_TAG=${{ github.ref_name }} # This will be "v0.9.1"
-          VERSION_NUM=${VERSION_TAG#v}     # This will be "0.9.1"
+          VERSION_TAG=${{ github.ref_name }} 
+          VERSION_NUM=${VERSION_TAG#v}     
           
           mkdir -p release_packages
           
-          echo "Zipping x64 assets..."
-          ls -l release_assets/x64 # List files before zipping for x64
-          if [ -z "$(ls -A release_assets/x64)" ]; then
-             echo "Error: x64 release_assets directory is empty!"
-             exit 1
-          fi
-          # Use * to zip all files within the directory, ensuring they are at the root of the zip
-          (cd release_assets/x64 && zip ../../release_packages/chrome-decryptor-${VERSION_NUM}-x64.zip *)
+          X64_ZIP_NAME="chrome-decryptor-${VERSION_NUM}-x64.zip"
+          ARM64_ZIP_NAME="chrome-decryptor-${VERSION_NUM}-arm64.zip"
           
-          echo "Zipping arm64 assets..."
-          ls -l release_assets/arm64 # List files before zipping for arm64
-          if [ -z "$(ls -A release_assets/arm64)" ]; then
-             echo "Error: arm64 release_assets directory is empty!"
+          echo "Zipping x64 assets to release_packages/${X64_ZIP_NAME}..."
+          if [ -z "$(ls -A release_assets/x64)" ]; then
+             echo "Error: x64 release_assets directory is empty or files not found!"
+             ls -l release_assets/ # Show content of release_assets if x64 is empty
              exit 1
           fi
-          (cd release_assets/arm64 && zip ../../release_packages/chrome-decryptor-${VERSION_NUM}-arm64.zip *)
+          (cd release_assets/x64 && zip "../../release_packages/${X64_ZIP_NAME}" *)
+          
+          echo "Zipping arm64 assets to release_packages/${ARM64_ZIP_NAME}..."
+          if [ -z "$(ls -A release_assets/arm64)" ]; then
+             echo "Error: arm64 release_assets directory is empty or files not found!"
+             ls -l release_assets/ # Show content of release_assets if arm64 is empty
+             exit 1
+          fi
+          (cd release_assets/arm64 && zip "../../release_packages/${ARM64_ZIP_NAME}" *)
           
           echo "Created ZIP packages:"
           ls -l release_packages
+
+          echo "x64_zip_path=release_packages/${X64_ZIP_NAME}" >> $GITHUB_OUTPUT
+          echo "arm64_zip_path=release_packages/${ARM64_ZIP_NAME}" >> $GITHUB_OUTPUT
 
       - name: Create Release
         id: create_release
@@ -139,6 +148,7 @@ jobs:
             Contains x64 and ARM64 binaries.
           draft: false
           prerelease: false
-          files: |
-            release_packages/chrome-decryptor-${{ github.ref_name_without_v }}-x64.zip
-            release_packages/chrome-decryptor-${{ github.ref_name_without_v }}-arm64.zip
+          files: | 
+            ${{ steps.zip_packages.outputs.x64_zip_path }}
+            ${{ steps.zip_packages.outputs.arm64_zip_path }}
+          fail_on_unmatched_files: true
