@@ -97,9 +97,9 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
 
 3. **Compile the DLL** (responsible for the decryption logic):
 
-   ```bash
+  ```bash
   cl /EHsc /std:c++17 /LD /O2 /MT /Ilibs\sqlite src\chrome_decrypt.cpp libs\sqlite\sqlite3.lib bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /link /OUT:chrome_decrypt.dll
-   ```
+  ```
 
 4. **Compile the injector** (responsible for DLL injection & console UX):
 
@@ -109,12 +109,11 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
 
 Both artifacts (`chrome_inject.exe`, `chrome_decrypt.dll`) must reside in the same folder.
 
-###  automating Builds with GitHub Actions
+###  Automated Builds with GitHub Actions
 
 This project uses GitHub Actions to automatically build `chrome_inject.exe` and `chrome_decrypt.dll` for both **x64** and **ARM64** architectures.
 
-- **Continuous Integration:** Builds are triggered on every push to the `main` branch.
-- **Releases:** When a new version tag (e.g., `v0.9.0`) is pushed, the workflow automatically creates a GitHub Release. This release will include ZIP archives containing the compiled x64 and ARM64 binaries (`chrome-decryptor-VERSION-x64.zip` and `chrome-decryptor-VERSION-arm64.zip`).
+- **Releases:** When a new version tag (e.g., `v0.9.0`) is pushed, the workflow automatically creates a GitHub Release. This release will include ZIP archives containing the compiled x64 and ARM64 binaries.
 
 You can find pre-compiled binaries attached to the [Releases page](https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption/releases) of this repository.
 
