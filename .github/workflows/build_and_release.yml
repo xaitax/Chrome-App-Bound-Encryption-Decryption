@@ -1,0 +1,124 @@
+name: Build and Release Chrome App-Bound Encryption Decryption
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build for ${{ matrix.architecture }}
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        architecture: [x64, arm64]
+        include:
+          - architecture: x64
+            platform_toolset_arg: x64
+            output_suffix: x64
+          - architecture: arm64
+            platform_toolset_arg: x64_arm64
+            output_suffix: arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Add MSVC to PATH and set up environment variables
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.platform_toolset_arg }}
+
+      - name: Compile SQLite (${{ matrix.architecture }})
+        shell: cmd
+        run: |
+          echo "Compiling SQLite for ${{ matrix.architecture }}"
+          cl /nologo /W3 /O2 /MT /c libs\sqlite\sqlite3.c /Fo"sqlite3_${{ matrix.output_suffix }}.obj"
+          lib /nologo /OUT:"sqlite3_${{ matrix.output_suffix }}.lib" "sqlite3_${{ matrix.output_suffix }}.obj"
+          echo "SQLite compilation finished for ${{ matrix.architecture }}"
+
+      - name: Compile chrome_decrypt.dll (${{ matrix.architecture }})
+        shell: cmd
+        run: |
+          echo "Compiling chrome_decrypt.dll for ${{ matrix.architecture }}"
+          cl /EHsc /std:c++17 /LD /O2 /MT /Ilibs\sqlite src\chrome_decrypt.cpp "sqlite3_${{ matrix.output_suffix }}.lib" bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /link /OUT:"chrome_decrypt_${{ matrix.output_suffix }}.dll"
+          echo "chrome_decrypt.dll compilation finished for ${{ matrix.architecture }}"
+
+      - name: Compile chrome_inject.exe (${{ matrix.architecture }})
+        shell: cmd
+        run: |
+          echo "Compiling chrome_inject.exe for ${{ matrix.architecture }}"
+          cl /EHsc /O2 /std:c++17 /MT src\chrome_inject.cpp version.lib ntdll.lib shell32.lib /link /OUT:"chrome_inject_${{ matrix.output_suffix }}.exe"
+          echo "chrome_inject.exe compilation finished for ${{ matrix.architecture }}"
+
+      - name: Create Artifacts Directory
+        run: mkdir staging
+
+      - name: Move artifacts to staging
+        shell: cmd
+        run: |
+          move "chrome_decrypt_${{ matrix.output_suffix }}.dll" staging\
+          move "chrome_inject_${{ matrix.output_suffix }}.exe" staging\
+          echo "Moved artifacts to staging for ${{ matrix.architecture }}"
+
+      - name: Upload build artifacts (${{ matrix.architecture }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: chrome-decryptor-binaries-${{ matrix.output_suffix }}
+          path: staging/
+
+  create_release:
+    name: Create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v') # Only run for version tags
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository (for release notes, etc. - optional)
+        uses: actions/checkout@v4
+
+      - name: Download x64 binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: chrome-decryptor-binaries-x64
+          path: release_assets/x64
+
+      - name: Download ARM64 binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: chrome-decryptor-binaries-arm64
+          path: release_assets/arm64
+      
+      - name: List downloaded files (for debugging)
+        run: |
+          ls -R release_assets
+
+      - name: Create ZIP archives
+        shell: bash
+        run: |
+          VERSION_TAG=${GITHUB_REF_NAME#v}
+          mkdir -p release_packages
+          (cd release_assets/x64 && zip ../../release_packages/chrome-decryptor-${VERSION_TAG}-x64.zip .)
+          (cd release_assets/arm64 && zip ../../release_packages/chrome-decryptor-${VERSION_TAG}-arm64.zip .)
+          echo "Created ZIP packages"
+          ls -R release_packages
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body: |
+            Automated release for version ${{ github.ref_name }}.
+            Contains x64 and ARM64 binaries.
+          draft: false
+          prerelease: false
+          files: |
+            release_packages/chrome-decryptor-*-x64.zip
+            release_packages/chrome-decryptor-*-arm64.zip

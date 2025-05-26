@@ -1,32 +1,26 @@
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
-*.o
+# Build artifacts
 *.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
 *.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
 *.exe
-*.out
-*.app
+*.lib
+*.pdb
+*.ilk
+*.exp
+output/
+src/*.obj
+src/*.dll
+src/*.exe
+src/*.lib
+libs/sqlite/*.obj
+libs/sqlite/*.lib
+
+# VS Code
+.vscode/
+
+# Temp files from DLL
+/chrome_decrypt.log
+/chrome_appbound_key.txt
+/chrome_decrypt_session.cfg
+/*_decrypt_cookies.txt
+/*_decrypt_passwords.txt
+/*_decrypt_payments.txt

