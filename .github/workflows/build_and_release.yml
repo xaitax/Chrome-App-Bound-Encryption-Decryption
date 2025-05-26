@@ -95,11 +95,38 @@ jobs:
           name: chrome-decryptor-binaries-arm64
           path: release_assets/arm64
       
-      - name: List downloaded files (for debugging)
+      - name: List downloaded files (Pre-Rename)
         run: |
-          echo "--- Listing contents of release_assets ---"
+          echo "--- Listing contents of release_assets (Before Rename) ---"
           ls -R release_assets
-          echo "----------------------------------------"
+          echo "--------------------------------------------------------"
+
+      - name: Rename DLLs for packaging
+        shell: bash
+        run: |
+          # For x64
+          if [ -f release_assets/x64/chrome_decrypt_x64.dll ]; then
+            mv release_assets/x64/chrome_decrypt_x64.dll release_assets/x64/chrome_decrypt.dll
+            echo "Renamed x64 DLL"
+          else
+            echo "Error: chrome_decrypt_x64.dll not found in release_assets/x64/"
+            exit 1
+          fi
+          
+          # For arm64
+          if [ -f release_assets/arm64/chrome_decrypt_arm64.dll ]; then
+            mv release_assets/arm64/chrome_decrypt_arm64.dll release_assets/arm64/chrome_decrypt.dll
+            echo "Renamed arm64 DLL"
+          else
+            echo "Error: chrome_decrypt_arm64.dll not found in release_assets/arm64/"
+            exit 1
+          fi
+
+      - name: List downloaded files
+        run: |
+          echo "--- Listing contents of release_assets (After Rename) ---"
+          ls -R release_assets
+          echo "-------------------------------------------------------"
 
       - name: Create ZIP archives
         id: zip_packages 
@@ -110,24 +137,28 @@ jobs:
           
           mkdir -p release_packages
           
+          # x64 ZIP will now contain chrome_inject_x64.exe and chrome_decrypt.dll
           X64_ZIP_NAME="chrome-decryptor-${VERSION_NUM}-x64.zip"
+          # ARM64 ZIP will now contain chrome_inject_arm64.exe and chrome_decrypt.dll
           ARM64_ZIP_NAME="chrome-decryptor-${VERSION_NUM}-arm64.zip"
           
           echo "Zipping x64 assets to release_packages/${X64_ZIP_NAME}..."
           if [ -z "$(ls -A release_assets/x64)" ]; then
              echo "Error: x64 release_assets directory is empty or files not found!"
-             ls -l release_assets/ # Show content of release_assets if x64 is empty
+             ls -l release_assets/ 
              exit 1
           fi
-          (cd release_assets/x64 && zip "../../release_packages/${X64_ZIP_NAME}" *)
+          # Zip contents of release_assets/x64: chrome_inject_x64.exe and the renamed chrome_decrypt.dll
+          (cd release_assets/x64 && zip "../../release_packages/${X64_ZIP_NAME}" chrome_inject_x64.exe chrome_decrypt.dll)
           
           echo "Zipping arm64 assets to release_packages/${ARM64_ZIP_NAME}..."
           if [ -z "$(ls -A release_assets/arm64)" ]; then
              echo "Error: arm64 release_assets directory is empty or files not found!"
-             ls -l release_assets/ # Show content of release_assets if arm64 is empty
+             ls -l release_assets/ 
              exit 1
           fi
-          (cd release_assets/arm64 && zip "../../release_packages/${ARM64_ZIP_NAME}" *)
+          # Zip contents of release_assets/arm64: chrome_inject_arm64.exe and the renamed chrome_decrypt.dll
+          (cd release_assets/arm64 && zip "../../release_packages/${ARM64_ZIP_NAME}" chrome_inject_arm64.exe chrome_decrypt.dll)
           
           echo "Created ZIP packages:"
           ls -l release_packages
@@ -146,6 +177,9 @@ jobs:
           body: |
             Automated release for version ${{ github.ref_name }}.
             Contains x64 and ARM64 binaries.
+            Each ZIP includes:
+            - chrome_inject_ARCH.exe
+            - chrome_decrypt.dll (renamed for compatibility)
           draft: false
           prerelease: false
           files: | 
