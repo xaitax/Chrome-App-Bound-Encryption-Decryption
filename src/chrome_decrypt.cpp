@@ -49,7 +49,7 @@ typedef LONG NTSTATUS;
 #pragma comment(lib, "oleaut32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "bcrypt.lib")
-#pragma comment(lib, "sqlite3.lib")
+// #pragma comment(lib, "sqlite3.lib")
 
 namespace fs = std::filesystem;
 
