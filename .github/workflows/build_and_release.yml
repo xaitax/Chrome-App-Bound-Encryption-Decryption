@@ -94,17 +94,37 @@ jobs:
       
       - name: List downloaded files (for debugging)
         run: |
+          echo "--- Listing contents of release_assets ---"
           ls -R release_assets
+          echo "----------------------------------------"
 
       - name: Create ZIP archives
         shell: bash
         run: |
-          VERSION_TAG=${GITHUB_REF_NAME#v}
+          VERSION_TAG=${{ github.ref_name }} # This will be "v0.9.1"
+          VERSION_NUM=${VERSION_TAG#v}     # This will be "0.9.1"
+          
           mkdir -p release_packages
-          (cd release_assets/x64 && zip ../../release_packages/chrome-decryptor-${VERSION_TAG}-x64.zip .)
-          (cd release_assets/arm64 && zip ../../release_packages/chrome-decryptor-${VERSION_TAG}-arm64.zip .)
-          echo "Created ZIP packages"
-          ls -R release_packages
+          
+          echo "Zipping x64 assets..."
+          ls -l release_assets/x64 # List files before zipping for x64
+          if [ -z "$(ls -A release_assets/x64)" ]; then
+             echo "Error: x64 release_assets directory is empty!"
+             exit 1
+          fi
+          # Use * to zip all files within the directory, ensuring they are at the root of the zip
+          (cd release_assets/x64 && zip ../../release_packages/chrome-decryptor-${VERSION_NUM}-x64.zip *)
+          
+          echo "Zipping arm64 assets..."
+          ls -l release_assets/arm64 # List files before zipping for arm64
+          if [ -z "$(ls -A release_assets/arm64)" ]; then
+             echo "Error: arm64 release_assets directory is empty!"
+             exit 1
+          fi
+          (cd release_assets/arm64 && zip ../../release_packages/chrome-decryptor-${VERSION_NUM}-arm64.zip *)
+          
+          echo "Created ZIP packages:"
+          ls -l release_packages
 
       - name: Create Release
         id: create_release
@@ -120,5 +140,5 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            release_packages/chrome-decryptor-*-x64.zip
-            release_packages/chrome-decryptor-*-arm64.zip
+            release_packages/chrome-decryptor-${{ github.ref_name_without_v }}-x64.zip
+            release_packages/chrome-decryptor-${{ github.ref_name_without_v }}-arm64.zip
