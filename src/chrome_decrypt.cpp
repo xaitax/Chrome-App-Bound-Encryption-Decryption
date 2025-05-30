@@ -1,5 +1,5 @@
 // chrome_decrypt.cpp
-// v0.9.0 (c) Alexander 'xaitax' Hagenah
+// v0.10.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 /*
  * Chrome App-Bound Encryption Service:
@@ -23,6 +23,7 @@
 #include <optional>
 #include <memory>
 #include <cctype>
+#include "reflective_loader.h"
 
 const WCHAR *COMPLETION_EVENT_NAME_DLL = L"Global\\ChromeDecryptWorkDoneEvent";
 const char *SESSION_CONFIG_FILE_NAME = "chrome_decrypt_session.cfg";
@@ -49,7 +50,6 @@ typedef LONG NTSTATUS;
 #pragma comment(lib, "oleaut32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "bcrypt.lib")
-// #pragma comment(lib, "sqlite3.lib")
 
 namespace fs = std::filesystem;
 
@@ -150,19 +150,19 @@ IEdgeIntermediateElevator : public IEdgeElevatorBase_Placeholder
 {
 public:
     virtual HRESULT STDMETHODCALLTYPE RunRecoveryCRXElevated(
-        const WCHAR *crx_path, 
-        const WCHAR *browser_appid, 
+        const WCHAR *crx_path,
+        const WCHAR *browser_appid,
         const WCHAR *browser_version,
-        const WCHAR *session_id, 
-        DWORD caller_proc_id, 
+        const WCHAR *session_id,
+        DWORD caller_proc_id,
         ULONG_PTR *proc_handle) = 0;
     virtual HRESULT STDMETHODCALLTYPE EncryptData(
-        ProtectionLevel protection_level, 
+        ProtectionLevel protection_level,
         const BSTR plaintext,
-        BSTR *ciphertext, 
+        BSTR *ciphertext,
         DWORD *last_error) = 0;
     virtual HRESULT STDMETHODCALLTYPE DecryptData(
-        const BSTR ciphertext, 
+        const BSTR ciphertext,
         BSTR *plaintext,
         DWORD *last_error) = 0;
 };

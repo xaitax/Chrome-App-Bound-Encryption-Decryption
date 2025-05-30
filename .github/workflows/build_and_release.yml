@@ -18,10 +18,12 @@ jobs:
         include:
           - architecture: x64
             platform_toolset_arg: x64
-            output_suffix: x64
+            output_suffix: x64 #
+            final_injector_name: chrome_inject_x64.exe
           - architecture: arm64
-            platform_toolset_arg: x64_arm64 # Cross-compiling for ARM64 on an x64 runner
+            platform_toolset_arg: x64_arm64 
             output_suffix: arm64
+            final_injector_name: chrome_inject_arm64.exe
 
     steps:
       - name: Checkout repository
@@ -44,14 +46,14 @@ jobs:
         shell: cmd
         run: |
           echo "Compiling chrome_decrypt.dll for ${{ matrix.architecture }}"
-          cl /EHsc /std:c++17 /LD /O2 /MT /Ilibs\sqlite src\chrome_decrypt.cpp "sqlite3_${{ matrix.output_suffix }}.lib" bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /link /OUT:"chrome_decrypt_${{ matrix.output_suffix }}.dll"
+          cl /EHsc /std:c++17 /LD /O2 /MT /Ilibs\sqlite src\chrome_decrypt.cpp src\reflective_loader.c "sqlite3_${{ matrix.output_suffix }}.lib" bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /link /OUT:"chrome_decrypt.dll"
           echo "chrome_decrypt.dll compilation finished for ${{ matrix.architecture }}"
 
       - name: Compile chrome_inject.exe (${{ matrix.architecture }})
         shell: cmd
         run: |
           echo "Compiling chrome_inject.exe for ${{ matrix.architecture }}"
-          cl /EHsc /O2 /std:c++17 /MT src\chrome_inject.cpp version.lib ntdll.lib shell32.lib /link /OUT:"chrome_inject_${{ matrix.output_suffix }}.exe"
+          cl /EHsc /O2 /std:c++17 /MT src\chrome_inject.cpp version.lib shell32.lib /link /OUT:"${{ matrix.final_injector_name }}"
           echo "chrome_inject.exe compilation finished for ${{ matrix.architecture }}"
 
       - name: Create Artifacts Directory
@@ -60,14 +62,14 @@ jobs:
       - name: Move artifacts to staging
         shell: cmd
         run: |
-          move "chrome_decrypt_${{ matrix.output_suffix }}.dll" staging\
-          move "chrome_inject_${{ matrix.output_suffix }}.exe" staging\
+          move "chrome_decrypt.dll" staging\
+          move "${{ matrix.final_injector_name }}" staging\
           echo "Moved artifacts to staging for ${{ matrix.architecture }}"
 
       - name: Upload build artifacts (${{ matrix.architecture }})
         uses: actions/upload-artifact@v4
         with:
-          name: chrome-decryptor-binaries-${{ matrix.output_suffix }}
+          name: chrome-decryptor-binaries-${{ matrix.architecture }}
           path: staging/
 
   create_release:
@@ -95,38 +97,11 @@ jobs:
           name: chrome-decryptor-binaries-arm64
           path: release_assets/arm64
       
-      - name: List downloaded files (Pre-Rename)
-        run: |
-          echo "--- Listing contents of release_assets (Before Rename) ---"
-          ls -R release_assets
-          echo "--------------------------------------------------------"
-
-      - name: Rename DLLs for packaging
-        shell: bash
-        run: |
-          # For x64
-          if [ -f release_assets/x64/chrome_decrypt_x64.dll ]; then
-            mv release_assets/x64/chrome_decrypt_x64.dll release_assets/x64/chrome_decrypt.dll
-            echo "Renamed x64 DLL"
-          else
-            echo "Error: chrome_decrypt_x64.dll not found in release_assets/x64/"
-            exit 1
-          fi
-          
-          # For arm64
-          if [ -f release_assets/arm64/chrome_decrypt_arm64.dll ]; then
-            mv release_assets/arm64/chrome_decrypt_arm64.dll release_assets/arm64/chrome_decrypt.dll
-            echo "Renamed arm64 DLL"
-          else
-            echo "Error: chrome_decrypt_arm64.dll not found in release_assets/arm64/"
-            exit 1
-          fi
-
       - name: List downloaded files
         run: |
-          echo "--- Listing contents of release_assets (After Rename) ---"
+          echo "--- Listing contents of release_assets ---"
           ls -R release_assets
-          echo "-------------------------------------------------------"
+          echo "------------------------------------------"
 
       - name: Create ZIP archives
         id: zip_packages 
@@ -137,9 +112,7 @@ jobs:
           
           mkdir -p release_packages
           
-          # x64 ZIP will now contain chrome_inject_x64.exe and chrome_decrypt.dll
           X64_ZIP_NAME="chrome-decryptor-${VERSION_NUM}-x64.zip"
-          # ARM64 ZIP will now contain chrome_inject_arm64.exe and chrome_decrypt.dll
           ARM64_ZIP_NAME="chrome-decryptor-${VERSION_NUM}-arm64.zip"
           
           echo "Zipping x64 assets to release_packages/${X64_ZIP_NAME}..."
@@ -148,7 +121,7 @@ jobs:
              ls -l release_assets/ 
              exit 1
           fi
-          # Zip contents of release_assets/x64: chrome_inject_x64.exe and the renamed chrome_decrypt.dll
+          # Zip contents of release_assets/x64: chrome_inject_x64.exe and chrome_decrypt.dll
           (cd release_assets/x64 && zip "../../release_packages/${X64_ZIP_NAME}" chrome_inject_x64.exe chrome_decrypt.dll)
           
           echo "Zipping arm64 assets to release_packages/${ARM64_ZIP_NAME}..."
@@ -157,7 +130,7 @@ jobs:
              ls -l release_assets/ 
              exit 1
           fi
-          # Zip contents of release_assets/arm64: chrome_inject_arm64.exe and the renamed chrome_decrypt.dll
+          # Zip contents of release_assets/arm64: chrome_inject_arm64.exe and chrome_decrypt.dll
           (cd release_assets/arm64 && zip "../../release_packages/${ARM64_ZIP_NAME}" chrome_inject_arm64.exe chrome_decrypt.dll)
           
           echo "Created ZIP packages:"
@@ -178,8 +151,8 @@ jobs:
             Automated release for version ${{ github.ref_name }}.
             Contains x64 and ARM64 binaries.
             Each ZIP includes:
-            - chrome_inject_ARCH.exe
-            - chrome_decrypt.dll (renamed for compatibility)
+            - chrome_inject_ARCH.exe (e.g., chrome_inject_x64.exe)
+            - chrome_decrypt.dll (architecture-specific)
           draft: false
           prerelease: false
           files: | 
