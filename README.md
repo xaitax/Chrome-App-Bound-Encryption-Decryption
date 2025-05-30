@@ -19,7 +19,7 @@ These path-validation checks prevent any external tool — even with direct DPAP
 
 ## 🚀 How It Works
 
-+**This project** injects a DLL into the running browser process using **Reflective DLL Injection (RDI)**. The RDI technique for x64 is based on [Stephen Fewer's original work](https://github.com/stephenfewer/ReflectiveDLLInjection), and for ARM64, it utilizes my method detailed in [ARM64-ReflectiveDLLInjection](https://github.com/xaitax/ARM64-ReflectiveDLLInjection). Once injected, the DLL:
+**This project** injects a DLL into the running browser process using **Reflective DLL Injection (RDI)**. The RDI technique for x64 is based on [Stephen Fewer's original work](https://github.com/stephenfewer/ReflectiveDLLInjection), and for ARM64, it utilizes my method detailed in [ARM64-ReflectiveDLLInjection](https://github.com/xaitax/ARM64-ReflectiveDLLInjection). Once injected, the DLL:
 
 - **Runs from inside** the browser’s address space (satisfies IElevator’s install-folder check)
 - **Invokes** the IElevator COM interface directly to unwrap the ABE key
@@ -64,7 +64,7 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
 - 🌐 Works on **Google Chrome**, **Brave** & **Edge** (x64 & ARM64)
 - 🛠️ No admin privileges required
 
-![image](https://github.com/user-attachments/assets/49ab0698-027d-4589-b760-8920510833b2)
+![image](https://github.com/user-attachments/assets/ffceb425-be2b-47d5-9a9b-e622976875ba)
 
 ## 📦 Supported & Tested Versions
 
