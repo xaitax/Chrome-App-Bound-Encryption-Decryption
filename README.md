@@ -70,7 +70,8 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
 - 🌐 Works on **Google Chrome**, **Brave** & **Edge** (x64 & ARM64)
 - 🛠️ No admin privileges required
 
-![image](https://github.com/user-attachments/assets/ffceb425-be2b-47d5-9a9b-e622976875ba)
+![image](https://github.com/user-attachments/assets/0966c6cc-2392-4e64-b2ec-28a66731f098)
+
 
 ## 📦 Supported & Tested Versions
 
