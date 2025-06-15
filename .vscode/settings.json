@@ -68,6 +68,8 @@
         "list": "cpp",
         "unordered_map": "cpp",
         "xhash": "cpp",
-        "cwctype": "cpp"
+        "cwctype": "cpp",
+        "functional": "cpp",
+        "random": "cpp"
     }
 }

