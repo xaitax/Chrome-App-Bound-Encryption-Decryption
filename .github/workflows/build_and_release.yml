@@ -18,59 +18,65 @@ jobs:
         include:
           - architecture: x64
             platform_toolset_arg: x64
-            output_suffix: x64 #
             final_injector_name: chrome_inject_x64.exe
           - architecture: arm64
             platform_toolset_arg: x64_arm64 
-            output_suffix: arm64
             final_injector_name: chrome_inject_arm64.exe
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Add MSVC to PATH and set up environment variables
+      - name: Add MSVC to PATH
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: ${{ matrix.platform_toolset_arg }}
 
-      - name: Compile SQLite (${{ matrix.architecture }})
+      - name: 1. Create Build Directory
+        run: mkdir build
+
+      - name: 2. Compile SQLite Library
         shell: cmd
         run: |
-          echo "Compiling SQLite for ${{ matrix.architecture }}"
-          cl /nologo /W3 /O2 /MT /c libs\sqlite\sqlite3.c /Fo"sqlite3_${{ matrix.output_suffix }}.obj"
-          lib /nologo /OUT:"sqlite3_${{ matrix.output_suffix }}.lib" "sqlite3_${{ matrix.output_suffix }}.obj"
-          echo "SQLite compilation finished for ${{ matrix.architecture }}"
+          cl /nologo /W3 /O2 /MT /GS- /c libs\sqlite\sqlite3.c /Fo"build\sqlite3.obj"
+          lib /nologo /OUT:"build\sqlite3.lib" "build\sqlite3.obj"
 
-      - name: Compile chrome_decrypt.dll (${{ matrix.architecture }})
+      - name: 3. Compile Payload DLL (Intermediate)
         shell: cmd
         run: |
-          echo "Compiling chrome_decrypt.dll for ${{ matrix.architecture }}"
-          cl /EHsc /std:c++17 /LD /O2 /MT /Ilibs\sqlite src\chrome_decrypt.cpp src\reflective_loader.c "sqlite3_${{ matrix.output_suffix }}.lib" bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /link /OUT:"chrome_decrypt.dll"
-          echo "chrome_decrypt.dll compilation finished for ${{ matrix.architecture }}"
+          echo "Compiling C object..."
+          cl /nologo /W3 /O2 /MT /GS- /c src\reflective_loader.c /Fo"build\reflective_loader.obj"
+          echo "Compiling C++ object..."
+          cl /nologo /W3 /O2 /MT /GS- /EHsc /std:c++17 /Ilibs\sqlite /c src\chrome_decrypt.cpp /Fo"build\chrome_decrypt.obj"
+          echo "Linking DLL..."
+          link /NOLOGO /DLL /OUT:"build\chrome_decrypt.dll" "build\chrome_decrypt.obj" "build\reflective_loader.obj" "build\sqlite3.lib" bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /IMPLIB:"build\chrome_decrypt.lib"
 
-      - name: Compile chrome_inject.exe (${{ matrix.architecture }})
+      - name: 4. Compile Encryption Utility
         shell: cmd
         run: |
-          echo "Compiling chrome_inject.exe for ${{ matrix.architecture }}"
-          cl /EHsc /O2 /std:c++17 /MT src\chrome_inject.cpp src\syscalls.cpp version.lib shell32.lib /link /OUT:"${{ matrix.final_injector_name }}"
-          echo "chrome_inject.exe compilation finished for ${{ matrix.architecture }}"
-
-      - name: Create Artifacts Directory
-        run: mkdir staging
-
-      - name: Move artifacts to staging
+          cl /nologo /W3 /O2 /MT /GS- /EHsc /std:c++17 /Ilibs\chacha src\encryptor.cpp /Fo"build\encryptor.obj" /link /NOLOGO /DYNAMICBASE /NXCOMPAT /OUT:"build\encryptor.exe"
+      
+      - name: 5. Encrypt Payload
         shell: cmd
         run: |
-          move "chrome_decrypt.dll" staging\
-          move "${{ matrix.final_injector_name }}" staging\
-          echo "Moved artifacts to staging for ${{ matrix.architecture }}"
+          build\encryptor.exe build\chrome_decrypt.dll build\chrome_decrypt.enc
 
-      - name: Upload build artifacts (${{ matrix.architecture }})
+      - name: 6. Compile Resource File
+        shell: cmd
+        run: |
+          rem This step requires that src/resource.rc has been modified to use "chrome_decrypt.enc" instead of a relative path.
+          rc.exe /i "build" /fo "build\resource.res" src\resource.rc
+
+      - name: 7. Compile Final Injector Executable
+        shell: cmd
+        run: |
+          cl /nologo /W3 /O2 /MT /GS- /EHsc /std:c++17 /Ilibs\chacha src\chrome_inject.cpp src\syscalls.cpp /Fo"build\\" "build\resource.res" version.lib shell32.lib /link /NOLOGO /DYNAMICBASE /NXCOMPAT /OUT:"${{ matrix.final_injector_name }}"
+
+      - name: 8. Upload Final Executable Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: chrome-decryptor-binaries-${{ matrix.architecture }}
-          path: staging/
+          name: injector-bin-${{ matrix.architecture }}
+          path: ${{ matrix.final_injector_name }}
 
   create_release:
     name: Create GitHub Release
@@ -78,84 +84,49 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
 
-    outputs:
-      release_url: ${{ steps.create_release.outputs.html_url }}
-
     steps:
-      - name: Checkout repository 
-        uses: actions/checkout@v4
-
-      - name: Download x64 binaries
+      - name: Download all injector binaries
         uses: actions/download-artifact@v4
         with:
-          name: chrome-decryptor-binaries-x64
-          path: release_assets/x64
+          path: release_assets
+          pattern: injector-bin-*
+          merge-multiple: true
 
-      - name: Download ARM64 binaries
-        uses: actions/download-artifact@v4
-        with:
-          name: chrome-decryptor-binaries-arm64
-          path: release_assets/arm64
-      
-      - name: List downloaded files
+      - name: List downloaded files for verification
         run: |
           echo "--- Listing contents of release_assets ---"
           ls -R release_assets
           echo "------------------------------------------"
 
-      - name: Create ZIP archives
-        id: zip_packages 
+      - name: Create Consolidated ZIP Archive
+        id: zip_package
         shell: bash
         run: |
           VERSION_TAG=${{ github.ref_name }} 
-          VERSION_NUM=${VERSION_TAG#v}     
+          ZIP_NAME="chrome-injector-${VERSION_TAG}.zip"
           
-          mkdir -p release_packages
+          echo "Zipping assets to ${ZIP_NAME}..."
+          (cd release_assets && zip "../${ZIP_NAME}" *)
           
-          X64_ZIP_NAME="chrome-decryptor-${VERSION_NUM}-x64.zip"
-          ARM64_ZIP_NAME="chrome-decryptor-${VERSION_NUM}-arm64.zip"
-          
-          echo "Zipping x64 assets to release_packages/${X64_ZIP_NAME}..."
-          if [ -z "$(ls -A release_assets/x64)" ]; then
-             echo "Error: x64 release_assets directory is empty or files not found!"
-             ls -l release_assets/ 
-             exit 1
-          fi
-          # Zip contents of release_assets/x64: chrome_inject_x64.exe and chrome_decrypt.dll
-          (cd release_assets/x64 && zip "../../release_packages/${X64_ZIP_NAME}" chrome_inject_x64.exe chrome_decrypt.dll)
-          
-          echo "Zipping arm64 assets to release_packages/${ARM64_ZIP_NAME}..."
-          if [ -z "$(ls -A release_assets/arm64)" ]; then
-             echo "Error: arm64 release_assets directory is empty or files not found!"
-             ls -l release_assets/ 
-             exit 1
-          fi
-          # Zip contents of release_assets/arm64: chrome_inject_arm64.exe and chrome_decrypt.dll
-          (cd release_assets/arm64 && zip "../../release_packages/${ARM64_ZIP_NAME}" chrome_inject_arm64.exe chrome_decrypt.dll)
-          
-          echo "Created ZIP packages:"
-          ls -l release_packages
+          echo "Created ZIP package:"
+          ls -l "${ZIP_NAME}"
 
-          echo "x64_zip_path=release_packages/${X64_ZIP_NAME}" >> $GITHUB_OUTPUT
-          echo "arm64_zip_path=release_packages/${ARM64_ZIP_NAME}" >> $GITHUB_OUTPUT
+          echo "zip_path=${ZIP_NAME}" >> $GITHUB_OUTPUT
 
       - name: Create Release
-        id: create_release
         uses: softprops/action-gh-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           body: |
-            Automated release for version ${{ github.ref_name }}.
-            Contains x64 and ARM64 binaries.
-            Each ZIP includes:
-            - chrome_inject_ARCH.exe (e.g., chrome_inject_x64.exe)
-            - chrome_decrypt.dll (architecture-specific)
+            Automated release for version **${{ github.ref_name }}**.
+
+            The attached `.zip` file contains the final injector executable for all supported architectures.
+
+            **Contents:**
+            - `chrome_inject_x64.exe`
+            - `chrome_inject_arm64.exe`
           draft: false
           prerelease: false
-          files: | 
-            ${{ steps.zip_packages.outputs.x64_zip_path }}
-            ${{ steps.zip_packages.outputs.arm64_zip_path }}
+          files: ${{ steps.zip_package.outputs.zip_path }}
           fail_on_unmatched_files: true

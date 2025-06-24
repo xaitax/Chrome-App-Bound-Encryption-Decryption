@@ -24,3 +24,5 @@ libs/sqlite/*.lib
 /*_decrypt_cookies.txt
 /*_decrypt_passwords.txt
 /*_decrypt_payments.txt
+/.vscode
+/build
