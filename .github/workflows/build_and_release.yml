@@ -9,8 +9,33 @@ on:
   workflow_dispatch:
 
 jobs:
+  build-encryptor-utility:
+    name: Build Encryptor Utility (x64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Add MSVC to PATH for x64
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Compile Encryption Utility
+        shell: cmd
+        run: |
+          mkdir build-tool
+          cl /nologo /W3 /O2 /MT /GS- /EHsc /std:c++17 /Ilibs\chacha src\encryptor.cpp /link /NOLOGO /OUT:"build-tool\encryptor.exe"
+
+      - name: Upload Encryptor Utility Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: encryptor-utility
+          path: build-tool/encryptor.exe
+
   build:
     name: Build for ${{ matrix.architecture }}
+    needs: build-encryptor-utility 
     runs-on: windows-latest
     strategy:
       matrix:
@@ -26,6 +51,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Download the x64 Encryptor Utility
+        uses: actions/download-artifact@v4
+        with:
+          name: encryptor-utility
 
       - name: Add MSVC to PATH
         uses: ilammy/msvc-dev-cmd@v1
@@ -44,35 +74,26 @@ jobs:
       - name: 3. Compile Payload DLL (Intermediate)
         shell: cmd
         run: |
-          echo "Compiling C object..."
           cl /nologo /W3 /O2 /MT /GS- /c src\reflective_loader.c /Fo"build\reflective_loader.obj"
-          echo "Compiling C++ object..."
           cl /nologo /W3 /O2 /MT /GS- /EHsc /std:c++17 /Ilibs\sqlite /c src\chrome_decrypt.cpp /Fo"build\chrome_decrypt.obj"
-          echo "Linking DLL..."
           link /NOLOGO /DLL /OUT:"build\chrome_decrypt.dll" "build\chrome_decrypt.obj" "build\reflective_loader.obj" "build\sqlite3.lib" bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /IMPLIB:"build\chrome_decrypt.lib"
 
-      - name: 4. Compile Encryption Utility
+      - name: 4. Encrypt Payload (using downloaded x64 encryptor)
         shell: cmd
         run: |
-          cl /nologo /W3 /O2 /MT /GS- /EHsc /std:c++17 /Ilibs\chacha src\encryptor.cpp /Fo"build\encryptor.obj" /link /NOLOGO /DYNAMICBASE /NXCOMPAT /OUT:"build\encryptor.exe"
-      
-      - name: 5. Encrypt Payload
-        shell: cmd
-        run: |
-          build\encryptor.exe build\chrome_decrypt.dll build\chrome_decrypt.enc
+          encryptor.exe build\chrome_decrypt.dll build\chrome_decrypt.enc
 
-      - name: 6. Compile Resource File
+      - name: 5. Compile Resource File
         shell: cmd
         run: |
-          rem This step requires that src/resource.rc has been modified to use "chrome_decrypt.enc" instead of a relative path.
           rc.exe /i "build" /fo "build\resource.res" src\resource.rc
 
-      - name: 7. Compile Final Injector Executable
+      - name: 6. Compile Final Injector Executable
         shell: cmd
         run: |
           cl /nologo /W3 /O2 /MT /GS- /EHsc /std:c++17 /Ilibs\chacha src\chrome_inject.cpp src\syscalls.cpp /Fo"build\\" "build\resource.res" version.lib shell32.lib /link /NOLOGO /DYNAMICBASE /NXCOMPAT /OUT:"${{ matrix.final_injector_name }}"
 
-      - name: 8. Upload Final Executable Artifact
+      - name: 7. Upload Final Executable Artifact
         uses: actions/upload-artifact@v4
         with:
           name: injector-bin-${{ matrix.architecture }}
@@ -83,7 +104,6 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
-
     steps:
       - name: Download all injector binaries
         uses: actions/download-artifact@v4
@@ -92,25 +112,13 @@ jobs:
           pattern: injector-bin-*
           merge-multiple: true
 
-      - name: List downloaded files for verification
-        run: |
-          echo "--- Listing contents of release_assets ---"
-          ls -R release_assets
-          echo "------------------------------------------"
-
       - name: Create Consolidated ZIP Archive
         id: zip_package
         shell: bash
         run: |
           VERSION_TAG=${{ github.ref_name }} 
           ZIP_NAME="chrome-injector-${VERSION_TAG}.zip"
-          
-          echo "Zipping assets to ${ZIP_NAME}..."
           (cd release_assets && zip "../${ZIP_NAME}" *)
-          
-          echo "Created ZIP package:"
-          ls -l "${ZIP_NAME}"
-
           echo "zip_path=${ZIP_NAME}" >> $GITHUB_OUTPUT
 
       - name: Create Release
