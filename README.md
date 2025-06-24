@@ -69,9 +69,9 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
 - 👥 Support for multiple browser profiles (Default, Profile 1, Profile 2, etc.)
 - 📁 Customizable output directory for extracted data.
 - 🛠️ No admin privileges required.
+  
 
-![image](https://github.com/user-attachments/assets/0966c6cc-2392-4e64-b2ec-28a66731f098)
-
+![image](https://github.com/user-attachments/assets/c2388201-ada9-4ac1-b242-de8f3b0d434f)
 
 ## 📦 Supported & Tested Versions
 
