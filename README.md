@@ -148,9 +148,13 @@ This single command will compile all components and produce a self-contained `ch
 
 ###  Automated Builds with GitHub Actions
 
-This project uses GitHub Actions to automatically build a single, self-contained `chrome_inject.exe` for both **x64** and **ARM64** architectures.
+This project uses GitHub Actions to automatically build the injector executable ( `chrome_inject.exe`) for both **x64** and **ARM64** architectures
 
-You can find the latest pre-compiled binaries packaged in a single .zip file on the [**Releases page**](https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption/releases).
+You can find the latest pre-compiled binaries on the [**Releases page**](https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption/releases). The executables for both architectures are packaged together in a single, convenient .zip file.
+
+**Release Package Contents:**
+- `chrome_inject_x64.exe`
+- `chrome_inject_arm64.exe`
 
 ## 🚀 Usage
 
