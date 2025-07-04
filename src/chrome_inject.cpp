@@ -1,5 +1,5 @@
 // chrome_inject.cpp
-// v0.12.0 (c) Alexander 'xaitax' Hagenah
+// v0.12.1 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
@@ -145,7 +145,7 @@ namespace Injector
                       << "|  Chrome App-Bound Encryption Decryption      |\n"
                       << "|  Direct Syscall Injection Engine             |\n"
                       << "|  x64 & ARM64 | Cookies, Passwords, Payments  |\n"
-                      << "|  v0.12.0 by @xaitax                          |\n"
+                      << "|  v0.12.1 by @xaitax                          |\n"
                       << "------------------------------------------------\n\n";
             SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
         }

