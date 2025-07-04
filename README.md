@@ -77,9 +77,9 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
 
 | Browser            | Tested Version (x64 & ARM64) |
 | ------------------ | ---------------------------- |
-| **Google Chrome**  | 138.0.7204.50                |
-| **Brave**          | 1.79.126 (137.0.7151.119)    |
-| **Microsoft Edge** | 138.0.3351.42                |
+| **Google Chrome**  | 138.0.7204.97                |
+| **Brave**          | 1.80.115 (138.0.7204.97)     |
+| **Microsoft Edge** | 139.0.3405.13                |
 
 > [!NOTE]  
 > The injector requires the target browser to be **running** unless you use `--start-browser`.
@@ -352,6 +352,7 @@ Each payment file is a JSON array of objects:
 ### v0.12.1
 - **Enhanced Profile Detection**: Made profile discovery more robust by comprehensively scanning `User Data` subdirectories for characteristic browser database files, ensuring custom-named user profiles are correctly identified and processed alongside default profiles.
 - **Critical Bug Fix / Compatibility**: Resolved crashes and improved compatibility with newer Chromium versions by gracefully handling specific 31-byte empty or placeholder encrypted blobs that previously caused `GCM blob is invalid` errors. The decryption logic now correctly interprets these as empty values instead of throwing exceptions.
+- **Improved Database Access Robustness**: Re-implemented and enhanced the `SQLite nolock=1` mechanism for accessing browser databases (e.g., Cookies, Login Data, Web Data). This ensures highly robust and stable read access to SQLite files, even when they might be concurrently locked by other processes, by leveraging SQLite's URI filename feature to bypass OS-level file locking.
 
 ### v0.12
 - **Fileless Payload Execution (Encrypted Resource Delivery)**: Migrated the payload DLL from a disk-based file to an in-memory, **ChaCha20-encrypted** resource embedded within the injector. The payload is now decrypted at runtime and reflectively injected, eliminating on-disk artifacts and defeating static analysis.

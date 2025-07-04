@@ -617,11 +617,15 @@ namespace Payload
                 return;
 
             sqlite3 *db = nullptr;
-            if (sqlite3_open_v2(dbPath.string().c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK)
+            std::string uriPath = dbPath.string();
+            std::replace(uriPath.begin(), uriPath.end(), '\\', '/');
+            uriPath = "file:" + uriPath + "?nolock=1";
+
+            if (sqlite3_open_v2(uriPath.c_str(), &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nullptr) != SQLITE_OK)
             {
                 if (db)
                     sqlite3_close_v2(db);
-                return;
+                Log("[-] Failed to open database " + dbPath.u8string() + ": " + sqlite3_errmsg(db));
             }
             auto dbCloser = [](sqlite3 *d)
             { if(d) sqlite3_close_v2(d); };
