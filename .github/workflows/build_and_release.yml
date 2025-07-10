@@ -66,7 +66,7 @@ jobs:
       - name: Upload Final Executable Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: injector-binary-${{ matrix.architecture }} # CRITICAL FIX 1: Unique artifact name per architecture
+          name: injector-binary-${{ matrix.architecture }}
           path: ${{ matrix.final_name }}
 
   create_release:
@@ -80,15 +80,23 @@ jobs:
       - name: Download all injector binaries
         uses: actions/download-artifact@v4
         with:
-          path: release_assets # CRITICAL FIX 2: Download ALL artifacts into one directory
+          path: release_assets
+          merge-multiple: true
 
       - name: Create Consolidated ZIP Archive
         id: zip_package
         shell: bash
         run: |
-          VERSION_TAG=${{ github.ref_name }} 
+          # Sanity check to see the files that are about to be zipped.
+          echo "Verifying contents of release directory:"
+          ls -lR release_assets
+
+          VERSION_TAG=${{ github.ref_name }}
           ZIP_NAME="chrome-injector-${VERSION_TAG}.zip"
+          
+          # This command now works correctly because the directory is flat.
           (cd release_assets && zip "../${ZIP_NAME}" *)
+          
           echo "zip_path=${ZIP_NAME}" >> $GITHUB_OUTPUT
 
       - name: Create Release
