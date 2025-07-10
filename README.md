@@ -7,7 +7,7 @@
 ![Platform](https://img.shields.io/badge/platform-Windows%20x64%20%7C%20ARM64-lightgrey)
 ![Languages](https://img.shields.io/badge/code-C%2B%2B%20%7C%20ASM-9cf)
 
-A sophisticated post-exploitation tool demonstrating a complete, in-memory bypass of Chromium's **App-Bound Encryption (ABE)**. This project leverages a fileless, multi-stage injection process utilizing direct syscalls and reflective DLL injection to decrypt and exfiltrate sensitive user data (cookies, passwords, payments) from modern Chromium browsers.
+A post-exploitation tool demonstrating a complete, in-memory bypass of Chromium's **App-Bound Encryption (ABE)**. This project leverages a fileless, multi-stage injection process utilizing direct syscalls and reflective DLL injection to decrypt and exfiltrate sensitive user data (cookies, passwords, payments) from modern Chromium browsers.
 
 If you find this research valuable, I’d appreciate a coffee:  
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M61EP5XL)
@@ -60,6 +60,9 @@ This tool is built on several advanced, security-focused techniques:
 - 🚀 Can auto-launch a headless browser process if one isn't running.
 - 📁 Customizable output directory for extracted data.
 
+<img width="1734" height="1552" alt="image" src="https://github.com/user-attachments/assets/3261aa3e-5875-4dcd-8a6f-dff93ec8aa25" />
+
+
 ## 📚 In-Depth Technical Analysis & Research
 
 For a comprehensive understanding of Chrome's App-Bound Encryption, the intricacies of its implementation, the detailed mechanics of this tool's approach, and a broader discussion of related security vectors, please refer to my detailed research paper:
@@ -89,8 +92,6 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
     *   Provides a comprehensive guide to interpreting COMrade ABE's output, including CLSIDs, IIDs (standard and C++ style), and the significance of verbose output details like VTable offsets, defining interfaces, and full inheritance chains.
     *   Highlights the utility of the auto-generated C++ stubs (`--output-cpp-stub`) for rapid development and research.
     *   Discusses how COMrade ABE aids in adapting to ABE changes, analyzing new Chromium browsers, and understanding vendor-specific COM customizations.
-
-![image](https://github.com/user-attachments/assets/c2388201-ada9-4ac1-b242-de8f3b0d434f)
 
 ## 📦 Supported & Tested Versions
 
