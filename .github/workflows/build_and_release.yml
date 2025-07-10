@@ -15,17 +15,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
       - name: Add MSVC to PATH for x64
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-
       - name: Build the x64 Encryptor Utility
         shell: cmd
         run: |
           call make.bat build_encryptor_only
-
       - name: Upload Encryptor Utility Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -35,7 +32,7 @@ jobs:
   build:
     name: Build for ${{ matrix.architecture }}
     runs-on: windows-latest
-    needs: build-tool # This job depends on the build-tool job
+    needs: build-tool
     strategy:
       fail-fast: false
       matrix:
@@ -46,36 +43,30 @@ jobs:
           - architecture: arm64
             msvc_arch: x64_arm64 
             final_name: chrome_inject_arm64.exe
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
       - name: Add MSVC to PATH for ${{ matrix.architecture }}
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: ${{ matrix.msvc_arch }}
-
       - name: Download the x64 Encryptor Utility
         uses: actions/download-artifact@v4
         with:
           name: build-tool-encryptor
           path: build
-
       - name: Run Build Script for Target
         shell: cmd
         run: |
           call make.bat build_target_only
-
       - name: Rename Final Executable for Artifact Upload
         shell: cmd
         run: |
           rename chrome_inject.exe ${{ matrix.final_name }}
-
       - name: Upload Final Executable Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: injector-binaries
+          name: injector-binary-${{ matrix.architecture }} # CRITICAL FIX 1: Unique artifact name per architecture
           path: ${{ matrix.final_name }}
 
   create_release:
@@ -85,13 +76,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
       - name: Download all injector binaries
         uses: actions/download-artifact@v4
         with:
-          name: injector-binaries
-          path: release_assets
+          path: release_assets # CRITICAL FIX 2: Download ALL artifacts into one directory
 
       - name: Create Consolidated ZIP Archive
         id: zip_package
