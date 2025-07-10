@@ -175,11 +175,11 @@ goto :eof
     
     set "TRAMPOLINE_OBJ="
     if "%VSCMD_ARG_TGT_ARCH%"=="x64" (
-        set "TRAMPOLINE_SRC=%SRC_DIR%\syscall_trampoline_x64.asm"
+        set "TRAMpoline_SRC=%SRC_DIR%\syscall_trampoline_x64.asm"
         set "TRAMPOLINE_OBJ=%BUILD_DIR%\syscall_trampoline_x64.obj"
         set "ASM_CMD=ml64.exe /c /Fo"!TRAMPOLINE_OBJ!" "!TRAMPOLINE_SRC!""
     ) else if "%VSCMD_ARG_TGT_ARCH%"=="arm64" (
-        set "TRAMPOLINE_SRC=%SRC_DIR%\syscall_trampoline_arm64.asm"
+        set "TRAMpoline_SRC=%SRC_DIR%\syscall_trampoline_arm64.asm"
         set "TRAMPOLINE_OBJ=%BUILD_DIR%\syscall_trampoline_arm64.obj"
         set "ASM_CMD=armasm64.exe -nologo "!TRAMPOLINE_SRC!" -o "!TRAMPOLINE_OBJ!""
     ) else (
@@ -190,8 +190,12 @@ goto :eof
     call :run_command "!ASM_CMD!" "  - Assembling syscall trampoline (%VSCMD_ARG_TGT_ARCH%)..."
     if %errorlevel% neq 0 exit /b 1
 
-    set "CMD_COMPILE_CPP=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% /I%LIBS_DIR%\chacha /c %SRC_DIR%\chrome_inject.cpp %SRC_DIR%\syscalls.cpp /Fo"%BUILD_DIR%\\""
-    call :run_command "!CMD_COMPILE_CPP!" "  - Compiling C++ source files..."
+    set "CMD_COMPILE_INJECTOR_SRC=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% /I%LIBS_DIR%\chacha /c %SRC_DIR%\chrome_inject.cpp /Fo"%BUILD_DIR%\chrome_inject.obj""
+    call :run_command "!CMD_COMPILE_INJECTOR_SRC!" "  - Compiling C++ source (chrome_inject.cpp)..."
+    if %errorlevel% neq 0 exit /b 1
+    
+    set "CMD_COMPILE_SYSCALLS_SRC=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% /c %SRC_DIR%\syscalls.cpp /Fo"%BUILD_DIR%\syscalls.obj""
+    call :run_command "!CMD_COMPILE_SYSCALLS_SRC!" "  - Compiling C++ source (syscalls.cpp)..."
     if %errorlevel% neq 0 exit /b 1
     
     set "CMD_LINK_FINAL=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% "%BUILD_DIR%\chrome_inject.obj" "%BUILD_DIR%\syscalls.obj" !TRAMPOLINE_OBJ! "%BUILD_DIR%\resource.res" version.lib shell32.lib %LFLAGS_COMMON% /Fe".\%FINAL_EXE_NAME%""
