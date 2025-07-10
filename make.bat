@@ -153,10 +153,30 @@ goto :eof
 :encrypt_payload
     call :log_step "[4/6] Encrypting Payload DLL"
     set "CMD="%BUILD_DIR%\%ENCRYPTOR_EXE_NAME%" "%BUILD_DIR%\%PAYLOAD_DLL_NAME%" "%BUILD_DIR%\chrome_decrypt.enc""
+    
+    echo Running command: %CMD%   :: This will print the command to the console
+    
     call :run_command "%CMD%" "  - Running encryption process..."
     if %errorlevel% neq 0 exit /b 1
     call :log_success "Payload encrypted to chrome_decrypt.enc."
     echo.
+goto :eof
+
+:run_command
+    set "command_to_run=%~1"
+    set "message=%~2"
+    call :log_info "%message%"
+    if %VERBOSE%==1 (
+        echo %C_GRAY%!command_to_run!%C_RESET%
+        !command_to_run!
+    ) else (
+        !command_to_run! >nul 2>nul
+    )
+
+    if %errorlevel% neq 0 (
+        call :log_error "Previous step failed. Halting build."
+        exit /b 1
+    )
 goto :eof
 
 :compile_resource
@@ -190,23 +210,6 @@ goto :eof
 :: =============================================================================
 :: =                           HELPER SUBROUTINES                              =
 :: =============================================================================
-
-:run_command
-    set "command_to_run=%~1"
-    set "message=%~2"
-    call :log_info "%message%"
-    if %VERBOSE%==1 (
-        echo %C_GRAY%!command_to_run!%C_RESET%
-        !command_to_run!
-    ) else (
-        !command_to_run! >nul 2>nul
-    )
-
-    if %errorlevel% neq 0 (
-        call :log_error "Previous step failed. Halting build."
-        exit /b 1
-    )
-goto :eof
 
 :cleanup
     if exist "%BUILD_DIR%\" rmdir /s /q "%BUILD_DIR%"
