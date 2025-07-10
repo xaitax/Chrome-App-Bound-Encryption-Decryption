@@ -9,108 +9,59 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-encryptor-utility:
-    name: Build Encryptor Utility (x64)
-    runs-on: windows-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Add MSVC to PATH for x64
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Compile Encryption Utility
-        shell: cmd
-        run: |
-          mkdir build-tool
-          cl /nologo /W3 /O2 /MT /GS- /EHsc /std:c++17 /Ilibs\chacha src\encryptor.cpp /link /NOLOGO /OUT:"build-tool\encryptor.exe"
-
-      - name: Upload Encryptor Utility Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: encryptor-utility
-          path: build-tool/encryptor.exe
-
   build:
     name: Build for ${{ matrix.architecture }}
-    needs: build-encryptor-utility 
     runs-on: windows-latest
     strategy:
+      fail-fast: false # Ensure all builds run even if one fails
       matrix:
-        architecture: [x64, arm64]
         include:
           - architecture: x64
-            platform_toolset_arg: x64
-            final_injector_name: chrome_inject_x64.exe
+            msvc_arch: x64
+            final_name: chrome_inject_x64.exe
           - architecture: arm64
-            platform_toolset_arg: x64_arm64 
-            final_injector_name: chrome_inject_arm64.exe
+            msvc_arch: x64_arm64 
+            final_name: chrome_inject_arm64.exe
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download the x64 Encryptor Utility
-        uses: actions/download-artifact@v4
-        with:
-          name: encryptor-utility
-
-      - name: Add MSVC to PATH
+      - name: Add MSVC to PATH for ${{ matrix.architecture }}
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: ${{ matrix.platform_toolset_arg }}
+          arch: ${{ matrix.msvc_arch }}
 
-      - name: 1. Create Build Directory
-        run: mkdir build
-
-      - name: 2. Compile SQLite Library
+      - name: Run Build Script
         shell: cmd
         run: |
-          cl /nologo /W3 /O2 /MT /GS- /c libs\sqlite\sqlite3.c /Fo"build\sqlite3.obj"
-          lib /nologo /OUT:"build\sqlite3.lib" "build\sqlite3.obj"
+          call make.bat
 
-      - name: 3. Compile Payload DLL (Intermediate)
+      - name: Rename Final Executable for Artifact Upload
         shell: cmd
         run: |
-          cl /nologo /W3 /O2 /MT /GS- /c src\reflective_loader.c /Fo"build\reflective_loader.obj"
-          cl /nologo /W3 /O2 /MT /GS- /EHsc /std:c++17 /Ilibs\sqlite /c src\chrome_decrypt.cpp /Fo"build\chrome_decrypt.obj"
-          link /NOLOGO /DLL /OUT:"build\chrome_decrypt.dll" "build\chrome_decrypt.obj" "build\reflective_loader.obj" "build\sqlite3.lib" bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /IMPLIB:"build\chrome_decrypt.lib"
+          rename chrome_inject.exe ${{ matrix.final_name }}
 
-      - name: 4. Encrypt Payload (using downloaded x64 encryptor)
-        shell: cmd
-        run: |
-          encryptor.exe build\chrome_decrypt.dll build\chrome_decrypt.enc
-
-      - name: 5. Compile Resource File
-        shell: cmd
-        run: |
-          rc.exe /i "build" /fo "build\resource.res" src\resource.rc
-
-      - name: 6. Compile Final Injector Executable
-        shell: cmd
-        run: |
-          cl /nologo /W3 /O2 /MT /GS- /EHsc /std:c++17 /Ilibs\chacha src\chrome_inject.cpp src\syscalls.cpp /Fo"build\\" "build\resource.res" version.lib shell32.lib /link /NOLOGO /DYNAMICBASE /NXCOMPAT /OUT:"${{ matrix.final_injector_name }}"
-
-      - name: 7. Upload Final Executable Artifact
+      - name: Upload Final Executable Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: injector-bin-${{ matrix.architecture }}
-          path: ${{ matrix.final_injector_name }}
+          name: injector-binaries
+          path: ${{ matrix.final_name }}
 
   create_release:
     name: Create GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: build # This job runs only after all builds in the matrix succeed
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed to create the release and upload assets
+
     steps:
       - name: Download all injector binaries
         uses: actions/download-artifact@v4
         with:
+          name: injector-binaries
           path: release_assets
-          pattern: injector-bin-*
-          merge-multiple: true
 
       - name: Create Consolidated ZIP Archive
         id: zip_package

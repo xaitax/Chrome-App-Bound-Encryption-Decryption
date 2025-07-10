@@ -1,5 +1,5 @@
 // encryptor.cpp
-// v0.12.0 (c) Alexander 'xaitax' Hagenah
+// v0.13.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 // Define the implementation flag BEFORE including the header

