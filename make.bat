@@ -194,8 +194,8 @@ goto :eof
     call :run_command "!CMD_COMPILE_CPP!" "  - Compiling C++ source files..."
     if %errorlevel% neq 0 exit /b 1
     
-    set "CMD_LINK=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% "%BUILD_DIR%\chrome_inject.obj" "%BUILD_DIR%\syscalls.obj" !TRAMPOLINE_OBJ! "%BUILD_DIR%\resource.res" version.lib shell32.lib %LFLAGS_COMMON% /OUT:".\%FINAL_EXE_NAME%""
-    call :run_command "!CMD_LINK!" "  - Linking final executable..."
+    set "CMD_LINK_FINAL=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% "%BUILD_DIR%\chrome_inject.obj" "%BUILD_DIR%\syscalls.obj" !TRAMPOLINE_OBJ! "%BUILD_DIR%\resource.res" version.lib shell32.lib %LFLAGS_COMMON% /Fe".\%FINAL_EXE_NAME%""
+    call :run_command "!CMD_LINK_FINAL!" "  - Linking final executable..."
     if %errorlevel% neq 0 exit /b 1
     
     call :log_success "Final injector built successfully."
