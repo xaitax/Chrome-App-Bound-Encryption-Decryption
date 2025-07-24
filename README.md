@@ -113,9 +113,6 @@ For a comprehensive understanding of Chrome's App-Bound Encryption, the intricac
 | **Brave**          | 1.80.124 (138.0.7204.168)    |
 | **Microsoft Edge** | 139.0.3405.52                |
 
-> [!NOTE]  
-> The injector requires the target browser to be **running** unless you use `--start-browser`.
-
 ## 🔧 Build Instructions
 
 This project uses a simple, robust build script that handles all compilation and resource embedding automatically.
