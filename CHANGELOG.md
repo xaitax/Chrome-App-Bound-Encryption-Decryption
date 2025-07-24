@@ -2,6 +2,21 @@
 
 ## 🆕 Changelog
 
+### v0.14.0
+- **Direct Syscall-Based Reflective Hollowing & Evasion**: Migrated the entire injection strategy from a live process "attach" model to a classic "hollowing" technique.
+  - The injector now launches the target browser via `CreateProcessW` in a `CREATE_SUSPENDED` state, providing full and uncontested control over the target's address space before any of its own code can execute.
+  - The payload is injected into this suspended process, a new thread is created for its execution using `NtCreateThreadEx`, and the target is cleanly terminated by the injector upon completion. The original, suspended main thread is never resumed.
+  - This fundamentally improves operational stealth by avoiding interaction with a running, monitored application and ensuring a clean injection environment.
+- **Network Service Termination**: Replaced the payload's indiscriminate `KillProcesses` function with a far more intelligent `KillBrowserNetworkService` routine within the injector itself.
+  - Using an expanded set of direct syscalls (`NtGetNextProcess`, `NtQueryInformationProcess`, `NtReadVirtualMemory`), the injector now enumerates all running instances of the target browser.
+  - It inspects the command-line arguments of each process by reading its PEB and terminates *only* the specific utility process responsible for the Network Service (`--utility-sub-type=network.mojom.NetworkService`).
+  - This surgical approach reliably releases file locks on the target SQLite databases without the collateral damage of closing the user's main browser windows, making the tool's operation significantly stealthier.
+- **Massive Syscall Engine Expansion**: The direct syscall engine was significantly expanded to eliminate dependencies on nearly all high-level Win32 process management APIs, further hardening the tool against user-land hooking.
+  - New syscall wrappers were added for process enumeration, information querying, memory reading, and termination, including: `NtGetNextProcess`, `NtQueryInformationProcess`, `NtReadVirtualMemory`, `NtTerminateProcess`, `NtUnmapViewOfSection`, `NtGetContextThread`, `NtSetContextThread`, `NtResumeThread`, and `NtFlushInstructionCache`.
+- **Complete Code Modernization and Refactoring**: The C++ codebases for both the injector and the payload were re-architected into a more modular design that adheres to modern C++ best practices.
+  - **Injector**: Logic was segregated into distinct classes (`Console`, `TargetProcess`, `PipeCommunicator`, `InjectionManager`), and the custom `HandleGuard` was replaced with the safer `std::unique_ptr` with a custom deleter.
+  - **Payload**: The monolithic `DecryptionSession` was broken down into a suite of specialized classes (`PipeLogger`, `BrowserManager`, `MasterKeyDecryptor`, `DataExtractor`, etc.) managed by a central `DecryptionOrchestrator`. This greatly improves code clarity and follows the Single Responsibility Principle.
+
 ### v0.13.0
 - **True Direct Syscall Engine**: Replaced the previous "Tartarus Gate" (direct `ntdll.dll` export invocation) with a true direct syscall engine for both x64 and ARM64 architectures.
   - The injector now resolves syscall numbers (SSNs) at runtime by sorting `ntdll.dll`'s `Zw*` export table by address ("Hell's Gate" technique).

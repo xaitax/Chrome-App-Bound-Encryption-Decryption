@@ -1,9 +1,10 @@
 // reflective_loader.h
-// v0.13.0 (c) Alexander 'xaitax' Hagenah
+// v0.14.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #ifndef REFLECTIVE_LOADER_H
 #define REFLECTIVE_LOADER_H
+#pragma once
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -12,16 +13,22 @@
 #if defined(_M_X64) || defined(_M_ARM64)
 #define ENVIRONMENT64
 #else
-#error "Unsupported architecture for Reflective Loader"
+#error "Unsupported architecture: Reflective Loader is designed for 64-bit environments (x64, ARM64)."
 #endif
 
+#if defined(_MSC_VER)
 #define DLLEXPORT __declspec(dllexport)
+#else
+#define DLLEXPORT
+#endif
 
 typedef HMODULE(WINAPI *LOADLIBRARYA_FN)(LPCSTR);
 typedef FARPROC(WINAPI *GETPROCADDRESS_FN)(HMODULE, LPCSTR);
 typedef LPVOID(WINAPI *VIRTUALALLOC_FN)(LPVOID, SIZE_T, DWORD, DWORD);
 typedef NTSTATUS(NTAPI *NTFLUSHINSTRUCTIONCACHE_FN)(HANDLE, PVOID, ULONG);
 typedef BOOL(WINAPI *DLLMAIN_FN)(HINSTANCE, DWORD, LPVOID);
+
+#define HASH_KEY 13
 
 #define KERNEL32DLL_HASH 0x6A4ABC5B
 #define NTDLLDLL_HASH 0x3CFA685D
@@ -30,8 +37,6 @@ typedef BOOL(WINAPI *DLLMAIN_FN)(HINSTANCE, DWORD, LPVOID);
 #define GETPROCADDRESS_HASH 0x7C0DFCAA
 #define VIRTUALALLOC_HASH 0x91AFCA54
 #define NTFLUSHINSTRUCTIONCACHE_HASH 0x534C0AB8
-
-#define HASH_KEY 13
 
 typedef struct _UNICODE_STRING_LDR
 {

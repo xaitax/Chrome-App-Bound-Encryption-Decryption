@@ -1,5 +1,5 @@
 ; syscall_trampoline_arm64.asm
-; v0.13.0 (c) Alexander 'xaitax' Hagenah
+; v0.14.0 (c) Alexander 'xaitax' Hagenah
 ; Licensed under the MIT License. See LICENSE file in the project root for full license information.
 ;
 ; A simple and ABI-compliant ARM64 trampoline. This version preserves callee-saved

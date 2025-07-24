@@ -1,5 +1,5 @@
 // syscalls.cpp
-// v0.13.0 (c) Alexander 'xaitax' Hagenah
+// v0.14.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include "syscalls.h"
@@ -11,63 +11,65 @@
 #include <sstream>
 #include <iomanip>
 #include <map>
+#include <functional>
 
-SYSCALL_STUBS g_syscall_stubs;
+SYSCALL_STUBS g_syscall_stubs{};
 
 static bool g_verbose_syscalls = false;
 static void debug_print(const std::string &msg)
 {
-    if (!g_verbose_syscalls)
-        return;
-    std::cout << "[#] [Syscalls] " << msg << std::endl;
+    if (g_verbose_syscalls)
+    {
+        std::cout << "[#] [Syscalls] " << msg << std::endl;
+    }
 }
 
 extern "C" NTSTATUS SyscallTrampoline(...);
 
-struct SORTED_SYSCALL_MAPPING
+namespace
 {
-    PVOID pAddress;
-    LPCSTR szName;
-    WORD ssn;
-};
-
-bool CompareSyscallMappings(const SORTED_SYSCALL_MAPPING &a, const SORTED_SYSCALL_MAPPING &b)
-{
-    return (uintptr_t)a.pAddress < (uintptr_t)b.pAddress;
-}
-
-PVOID FindSyscallGadget_x64(PVOID pFunction)
-{
-    for (DWORD i = 0; i <= 20; ++i)
+    struct SORTED_SYSCALL_MAPPING
     {
-        if (*(PWORD)((PBYTE)pFunction + i) == 0x050F && *((PBYTE)pFunction + i + 2) == 0xC3)
-        {
-            return (PVOID)((PBYTE)pFunction + i);
-        }
+        PVOID pAddress;
+        LPCSTR szName;
+    };
+
+    bool CompareSyscallMappings(const SORTED_SYSCALL_MAPPING &a, const SORTED_SYSCALL_MAPPING &b)
+    {
+        return reinterpret_cast<uintptr_t>(a.pAddress) < reinterpret_cast<uintptr_t>(b.pAddress);
     }
-    return nullptr;
-}
 
-PVOID FindSvcGadget_ARM64(PVOID pFunction)
-{
-    for (DWORD i = 0; i <= 20; i += 4)
+    PVOID FindSyscallGadget_x64(PVOID pFunction)
     {
-        DWORD instruction = *(PDWORD)((PBYTE)pFunction + i);
-        if ((instruction & 0xFF000000) == 0xD4000000)
+        for (DWORD i = 0; i <= 20; ++i)
         {
-            if (*(PDWORD)((PBYTE)pFunction + i + 4) == 0xD65F03C0)
+            auto current_addr = reinterpret_cast<PBYTE>(pFunction) + i;
+            if (*reinterpret_cast<PWORD>(current_addr) == 0x050F && *(current_addr + 2) == 0xC3)
             {
-                return (PVOID)((PBYTE)pFunction + i);
+                return current_addr;
             }
         }
+        return nullptr;
     }
-    return nullptr;
+
+    PVOID FindSvcGadget_ARM64(PVOID pFunction)
+    {
+        for (DWORD i = 0; i <= 20; i += 4)
+        {
+            auto current_addr = reinterpret_cast<PBYTE>(pFunction) + i;
+            DWORD instruction = *reinterpret_cast<PDWORD>(current_addr);
+            if ((instruction & 0xFF000000) == 0xD4000000 && *reinterpret_cast<PDWORD>(current_addr + 4) == 0xD65F03C0)
+            {
+                return current_addr;
+            }
+        }
+        return nullptr;
+    }
 }
 
 BOOL InitializeSyscalls(bool is_verbose)
 {
     g_verbose_syscalls = is_verbose;
-    memset(&g_syscall_stubs, 0, sizeof(SYSCALL_STUBS));
 
     HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
     if (!hNtdll)
@@ -76,96 +78,114 @@ BOOL InitializeSyscalls(bool is_verbose)
         return FALSE;
     }
 
-    PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)hNtdll;
-    PIMAGE_NT_HEADERS pNtHeaders = (PIMAGE_NT_HEADERS)((PBYTE)hNtdll + pDosHeader->e_lfanew);
-    PIMAGE_EXPORT_DIRECTORY pExportDir = (PIMAGE_EXPORT_DIRECTORY)((PBYTE)hNtdll + pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
+    auto pDosHeader = reinterpret_cast<PIMAGE_DOS_HEADER>(hNtdll);
+    auto pNtHeaders = reinterpret_cast<PIMAGE_NT_HEADERS>(reinterpret_cast<PBYTE>(hNtdll) + pDosHeader->e_lfanew);
+    PIMAGE_EXPORT_DIRECTORY pExportDir = reinterpret_cast<PIMAGE_EXPORT_DIRECTORY>(reinterpret_cast<PBYTE>(hNtdll) + pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
 
-    PDWORD pNameRvas = (PDWORD)((PBYTE)hNtdll + pExportDir->AddressOfNames);
-    PDWORD pAddressRvas = (PDWORD)((PBYTE)hNtdll + pExportDir->AddressOfFunctions);
-    PWORD pOrdinalRvas = (PWORD)((PBYTE)hNtdll + pExportDir->AddressOfNameOrdinals);
+    auto pNameRvas = reinterpret_cast<PDWORD>(reinterpret_cast<PBYTE>(hNtdll) + pExportDir->AddressOfNames);
+    auto pAddressRvas = reinterpret_cast<PDWORD>(reinterpret_cast<PBYTE>(hNtdll) + pExportDir->AddressOfFunctions);
+    auto pOrdinalRvas = reinterpret_cast<PWORD>(reinterpret_cast<PBYTE>(hNtdll) + pExportDir->AddressOfNameOrdinals);
 
     std::vector<SORTED_SYSCALL_MAPPING> sortedSyscalls;
+    sortedSyscalls.reserve(pExportDir->NumberOfNames);
+
     for (DWORD i = 0; i < pExportDir->NumberOfNames; ++i)
     {
-        LPCSTR szFuncName = (LPCSTR)((PBYTE)hNtdll + pNameRvas[i]);
+        LPCSTR szFuncName = reinterpret_cast<LPCSTR>(reinterpret_cast<PBYTE>(hNtdll) + pNameRvas[i]);
         if (strncmp(szFuncName, "Zw", 2) == 0)
         {
-            PVOID pFuncAddress = (PVOID)((PBYTE)hNtdll + pAddressRvas[pOrdinalRvas[i]]);
-            sortedSyscalls.push_back({pFuncAddress, szFuncName, 0});
+            PVOID pFuncAddress = reinterpret_cast<PVOID>(reinterpret_cast<PBYTE>(hNtdll) + pAddressRvas[pOrdinalRvas[i]]);
+            sortedSyscalls.push_back({pFuncAddress, szFuncName});
         }
     }
 
     std::sort(sortedSyscalls.begin(), sortedSyscalls.end(), CompareSyscallMappings);
-
     debug_print("Found and sorted " + std::to_string(sortedSyscalls.size()) + " Zw* functions.");
+
+    struct CStringComparer
+    {
+        bool operator()(const char *a, const char *b) const { return std::strcmp(a, b) < 0; }
+    };
+    const std::map<const char *, std::pair<SYSCALL_ENTRY *, UINT>, CStringComparer> required_syscalls = {
+        {"ZwAllocateVirtualMemory", {&g_syscall_stubs.NtAllocateVirtualMemory, 6}},
+        {"ZwWriteVirtualMemory", {&g_syscall_stubs.NtWriteVirtualMemory, 5}},
+        {"ZwReadVirtualMemory", {&g_syscall_stubs.NtReadVirtualMemory, 5}},
+        {"ZwCreateThreadEx", {&g_syscall_stubs.NtCreateThreadEx, 11}},
+        {"ZwFreeVirtualMemory", {&g_syscall_stubs.NtFreeVirtualMemory, 4}},
+        {"ZwProtectVirtualMemory", {&g_syscall_stubs.NtProtectVirtualMemory, 5}},
+        {"ZwOpenProcess", {&g_syscall_stubs.NtOpenProcess, 4}},
+        {"ZwGetNextProcess", {&g_syscall_stubs.NtGetNextProcess, 5}},
+        {"ZwTerminateProcess", {&g_syscall_stubs.NtTerminateProcess, 2}},
+        {"ZwQueryInformationProcess", {&g_syscall_stubs.NtQueryInformationProcess, 5}},
+        {"ZwUnmapViewOfSection", {&g_syscall_stubs.NtUnmapViewOfSection, 2}},
+        {"ZwGetContextThread", {&g_syscall_stubs.NtGetContextThread, 2}},
+        {"ZwSetContextThread", {&g_syscall_stubs.NtSetContextThread, 2}},
+        {"ZwResumeThread", {&g_syscall_stubs.NtResumeThread, 2}},
+        {"ZwFlushInstructionCache", {&g_syscall_stubs.NtFlushInstructionCache, 3}}};
 
     for (WORD i = 0; i < sortedSyscalls.size(); ++i)
     {
-        const char *name = sortedSyscalls[i].szName;
-        PVOID pGadget = nullptr;
-
-#if defined(_M_X64)
-        pGadget = FindSyscallGadget_x64(sortedSyscalls[i].pAddress);
-#elif defined(_M_ARM64)
-        pGadget = FindSvcGadget_ARM64(sortedSyscalls[i].pAddress);
-#endif
-
-        if (!pGadget)
+        const auto &mapping = sortedSyscalls[i];
+        auto it = required_syscalls.find(mapping.szName);
+        if (it == required_syscalls.end())
         {
             continue;
         }
 
-        if (_stricmp(name, "ZwAllocateVirtualMemory") == 0)
+        PVOID pGadget = nullptr;
+#if defined(_M_X64)
+        pGadget = FindSyscallGadget_x64(mapping.pAddress);
+#elif defined(_M_ARM64)
+        pGadget = FindSvcGadget_ARM64(mapping.pAddress);
+#endif
+
+        if (pGadget)
         {
-            g_syscall_stubs.NtAllocateVirtualMemory.ssn = i;
-            g_syscall_stubs.NtAllocateVirtualMemory.pSyscallGadget = pGadget;
-            g_syscall_stubs.NtAllocateVirtualMemory.nArgs = 6;
-        }
-        else if (_stricmp(name, "ZwWriteVirtualMemory") == 0)
-        {
-            g_syscall_stubs.NtWriteVirtualMemory.ssn = i;
-            g_syscall_stubs.NtWriteVirtualMemory.pSyscallGadget = pGadget;
-            g_syscall_stubs.NtWriteVirtualMemory.nArgs = 5;
-        }
-        else if (_stricmp(name, "ZwCreateThreadEx") == 0)
-        {
-            g_syscall_stubs.NtCreateThreadEx.ssn = i;
-            g_syscall_stubs.NtCreateThreadEx.pSyscallGadget = pGadget;
-            g_syscall_stubs.NtCreateThreadEx.nArgs = 11;
-        }
-        else if (_stricmp(name, "ZwFreeVirtualMemory") == 0)
-        {
-            g_syscall_stubs.NtFreeVirtualMemory.ssn = i;
-            g_syscall_stubs.NtFreeVirtualMemory.pSyscallGadget = pGadget;
-            g_syscall_stubs.NtFreeVirtualMemory.nArgs = 4;
-        }
-        else if (_stricmp(name, "ZwProtectVirtualMemory") == 0)
-        {
-            g_syscall_stubs.NtProtectVirtualMemory.ssn = i;
-            g_syscall_stubs.NtProtectVirtualMemory.pSyscallGadget = pGadget;
-            g_syscall_stubs.NtProtectVirtualMemory.nArgs = 5;
+            it->second.first->pSyscallGadget = pGadget;
+            it->second.first->nArgs = it->second.second;
+            it->second.first->ssn = i;
         }
     }
 
-    bool success = g_syscall_stubs.NtAllocateVirtualMemory.pSyscallGadget &&
-                   g_syscall_stubs.NtWriteVirtualMemory.pSyscallGadget &&
-                   g_syscall_stubs.NtCreateThreadEx.pSyscallGadget &&
-                   g_syscall_stubs.NtFreeVirtualMemory.pSyscallGadget &&
-                   g_syscall_stubs.NtProtectVirtualMemory.pSyscallGadget;
+    bool all_found = true;
+    for (const auto &pair : required_syscalls)
+    {
+        if (!pair.second.first->pSyscallGadget)
+        {
+            all_found = false;
+            break;
+        }
+    }
 
-    if (success)
+    if (all_found)
     {
         debug_print("Successfully initialized all direct syscall stubs.");
-        std::stringstream ss;
-        ss << "  - NtAllocateVirtualMemory (SSN: " << g_syscall_stubs.NtAllocateVirtualMemory.ssn << ") -> Gadget: 0x" << std::hex << (uintptr_t)g_syscall_stubs.NtAllocateVirtualMemory.pSyscallGadget;
-        debug_print(ss.str());
     }
     else
     {
-        debug_print("One or more required syscall gadgets could not be found.");
+        debug_print("ERROR: One or more required syscall gadgets could not be found.");
     }
 
-    return success;
+    for (const auto &pair : required_syscalls)
+    {
+        const char *name = pair.first;
+        const auto *stub = pair.second.first;
+        std::stringstream ss;
+        ss << "  - " << (name + 2);
+
+        if (stub->pSyscallGadget)
+        {
+            ss << " (SSN: " << stub->ssn << ") -> Gadget: 0x" << std::hex << reinterpret_cast<uintptr_t>(stub->pSyscallGadget);
+            debug_print(ss.str());
+        }
+        else
+        {
+            ss << " -> FAILED to find required gadget.";
+            debug_print(ss.str());
+        }
+    }
+
+    return all_found;
 }
 
 NTSTATUS NtAllocateVirtualMemory_syscall(HANDLE ProcessHandle, PVOID *BaseAddress, ULONG_PTR ZeroBits, PSIZE_T RegionSize, ULONG AllocationType, ULONG Protect)
@@ -176,6 +196,11 @@ NTSTATUS NtAllocateVirtualMemory_syscall(HANDLE ProcessHandle, PVOID *BaseAddres
 NTSTATUS NtWriteVirtualMemory_syscall(HANDLE ProcessHandle, PVOID BaseAddress, PVOID Buffer, SIZE_T NumberOfBytesToWrite, PSIZE_T NumberOfBytesWritten)
 {
     return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtWriteVirtualMemory, ProcessHandle, BaseAddress, Buffer, NumberOfBytesToWrite, NumberOfBytesWritten);
+}
+
+NTSTATUS NtReadVirtualMemory_syscall(HANDLE ProcessHandle, PVOID BaseAddress, PVOID Buffer, SIZE_T NumberOfBytesToRead, PSIZE_T NumberOfBytesRead)
+{
+    return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtReadVirtualMemory, ProcessHandle, BaseAddress, Buffer, NumberOfBytesToRead, NumberOfBytesRead);
 }
 
 NTSTATUS NtCreateThreadEx_syscall(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess, LPVOID ObjectAttributes, HANDLE ProcessHandle, LPTHREAD_START_ROUTINE lpStartAddress, LPVOID lpParameter, ULONG CreateFlags, ULONG_PTR ZeroBits, SIZE_T StackSize, SIZE_T MaximumStackSize, LPVOID AttributeList)
@@ -191,4 +216,49 @@ NTSTATUS NtFreeVirtualMemory_syscall(HANDLE ProcessHandle, PVOID *BaseAddress, P
 NTSTATUS NtProtectVirtualMemory_syscall(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG NewProtect, PULONG OldProtect)
 {
     return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtProtectVirtualMemory, ProcessHandle, BaseAddress, RegionSize, NewProtect, OldProtect);
+}
+
+NTSTATUS NtOpenProcess_syscall(PHANDLE ProcessHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes, PCLIENT_ID ClientId)
+{
+    return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtOpenProcess, ProcessHandle, DesiredAccess, ObjectAttributes, ClientId);
+}
+
+NTSTATUS NtGetNextProcess_syscall(HANDLE ProcessHandle, ACCESS_MASK DesiredAccess, ULONG HandleAttributes, ULONG Flags, PHANDLE NewProcessHandle)
+{
+    return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtGetNextProcess, ProcessHandle, DesiredAccess, HandleAttributes, Flags, NewProcessHandle);
+}
+
+NTSTATUS NtTerminateProcess_syscall(HANDLE ProcessHandle, NTSTATUS ExitStatus)
+{
+    return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtTerminateProcess, ProcessHandle, ExitStatus);
+}
+
+NTSTATUS NtQueryInformationProcess_syscall(HANDLE ProcessHandle, PROCESSINFOCLASS ProcessInformationClass, PVOID ProcessInformation, ULONG ProcessInformationLength, PULONG ReturnLength)
+{
+    return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtQueryInformationProcess, ProcessHandle, ProcessInformationClass, ProcessInformation, ProcessInformationLength, ReturnLength);
+}
+
+NTSTATUS NtUnmapViewOfSection_syscall(HANDLE ProcessHandle, PVOID BaseAddress)
+{
+    return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtUnmapViewOfSection, ProcessHandle, BaseAddress);
+}
+
+NTSTATUS NtGetContextThread_syscall(HANDLE ThreadHandle, PCONTEXT pContext)
+{
+    return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtGetContextThread, ThreadHandle, pContext);
+}
+
+NTSTATUS NtSetContextThread_syscall(HANDLE ThreadHandle, PCONTEXT pContext)
+{
+    return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtSetContextThread, ThreadHandle, pContext);
+}
+
+NTSTATUS NtResumeThread_syscall(HANDLE ThreadHandle, PULONG SuspendCount)
+{
+    return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtResumeThread, ThreadHandle, SuspendCount);
+}
+
+NTSTATUS NtFlushInstructionCache_syscall(HANDLE ProcessHandle, PVOID BaseAddress, ULONG NumberOfBytesToFlush)
+{
+    return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtFlushInstructionCache, ProcessHandle, BaseAddress, NumberOfBytesToFlush);
 }
