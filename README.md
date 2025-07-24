@@ -25,7 +25,7 @@ The tool's execution is focused on stealth and efficiency, built around a **Dire
     *   It allocates memory using `NtAllocateVirtualMemory`.
     *   It writes the decrypted payload DLL into the allocated space with `NtWriteVirtualMemory`.
     *   It changes the memory region's permissions to executable using `NtProtectVirtualMemory`.
-    *   It creates a **named pipe** for C2 communication and writes the pipe's name into the target's memory.
+    *   It creates a **named pipe** for communication and writes the pipe's name into the target's memory.
 5.  **Execution & Control:** A new thread is created in the target process using `NtCreateThreadEx`. The thread's start address points directly to the payload's `ReflectiveLoader` export, with the address of the remote pipe name as its argument. The original main thread of the browser remains suspended and is never resumed. The injector then waits for the payload to connect back to the pipe.
 
 ### **Stage 2: The Injected Payload (In-Memory)**
