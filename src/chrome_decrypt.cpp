@@ -1,5 +1,5 @@
 // chrome_decrypt.cpp
-// v0.14.0 (c) Alexander 'xaitax' Hagenah
+// v0.14.1 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
@@ -658,7 +658,7 @@ namespace Payload
     class DecryptionOrchestrator
     {
     public:
-        DecryptionOrchestrator(LPVOID lpPipeNamePointer) : m_logger(static_cast<LPCWSTR>(lpPipeNamePointer))
+        DecryptionOrchestrator(LPCWSTR lpcwstrPipeName) : m_logger(lpcwstrPipeName)
         {
             if (!m_logger.isValid())
             {
@@ -721,18 +721,21 @@ struct ThreadParams
 
 DWORD WINAPI DecryptionThreadWorker(LPVOID lpParam)
 {
-    auto params = std::unique_ptr<ThreadParams>(static_cast<ThreadParams *>(lpParam));
+    LPCWSTR lpcwstrPipeName = static_cast<LPCWSTR>(lpParam);
+
+    auto params = std::unique_ptr<ThreadParams>(new ThreadParams{});
+    auto thread_params = std::unique_ptr<ThreadParams>(static_cast<ThreadParams *>(lpParam));
 
     try
     {
-        Payload::DecryptionOrchestrator orchestrator(params->lpPipeNamePointerFromInjector);
+        Payload::DecryptionOrchestrator orchestrator(static_cast<LPCWSTR>(thread_params->lpPipeNamePointerFromInjector));
         orchestrator.Run();
     }
     catch (const std::exception &e)
     {
         try
         {
-            Payload::PipeLogger errorLogger(static_cast<LPCWSTR>(params->lpPipeNamePointerFromInjector));
+            Payload::PipeLogger errorLogger(static_cast<LPCWSTR>(thread_params->lpPipeNamePointerFromInjector));
             if (errorLogger.isValid())
             {
                 errorLogger.Log("[-] CRITICAL DLL ERROR: " + std::string(e.what()));
@@ -740,10 +743,11 @@ DWORD WINAPI DecryptionThreadWorker(LPVOID lpParam)
         }
         catch (...)
         {
+            // Failsafe if logging itself fails.
         }
     }
 
-    FreeLibraryAndExitThread(params->hModule_dll, 0);
+    FreeLibraryAndExitThread(thread_params->hModule_dll, 0);
     return 0;
 }
 

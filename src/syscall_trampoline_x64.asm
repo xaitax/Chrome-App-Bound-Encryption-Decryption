@@ -1,80 +1,51 @@
 ; syscall_trampoline_x64.asm
-; v0.14.0 (c) Alexander 'xaitax' Hagenah
+; v0.14.1 (c) Alexander 'xaitax' Hagenah
 ; Licensed under the MIT License. See LICENSE file in the project root for full license information.
 ;
-; The definitive, ABI-compliant, and argument-aware x64 trampoline.
-; This version combines a stable stack frame with meticulous preservation of
-; non-volatile registers, guaranteeing no corruption of the C++ caller's state.
+; ABI-compliant x64 trampoline with unconditional marshalling for max arguments.
+; Allocates sufficient stack to prevent overwrite issues. Uses rep movsq for efficient block copy.
+; Preserves necessary non-volatile registers. Eliminates dynamic loop to reduce complexity and potential errors.
+; Sets SSN before dispatching to gadget. Handles up to 11 syscall arguments safely (copies 8 stack slots, extra as harmless garbage).
 
 .code
 ALIGN 16
 PUBLIC SyscallTrampoline
 
 SyscallTrampoline PROC FRAME
-    ; — Prologue: Establish a stable, ABI-compliant stack frame —
-    ; We push RBP to create the frame, then immediately push every non-volatile
-    ; register that this function will modify. This is the most critical step
-    ; for preventing caller-state corruption.
     push    rbp
     mov     rbp, rsp
-    push    r12
-    push    r13
+    push    rbx
     push    rdi
     push    rsi
-    sub     rsp, 64         ; Allocate stack space for shadow space and locals.
-
-    ; Mark the end of the prologue for the ml64 assembler.
+    sub     rsp, 80h              ; Allocate 128 bytes: safe for shadow (0x20) + 8 qwords (0x40) + padding
     .ENDPROLOG
 
-    ; — Preserve SYSCALL_ENTRY* pointer —
-    ; We save it in a preserved register (R12) for use throughout the function.
-    mov     r12, rcx
+    mov     rbx, rcx              ; Preserve SYSCALL_ENTRY* in rbx (non-volatile)
 
-    ; — Marshal C arguments to the x64 Syscall Convention —
-    ; Kernel requires arguments in: R10, RDX, R8, R9, and then the stack.
-    mov     rcx, rdx        ; C-Arg2 (e.g., ProcessHandle) -> goes into RCX temporarily.
-    mov     rdx, r8         ; C-Arg3 -> Syscall-Arg2 (RDX)
-    mov     r8,  r9         ; C-Arg4 -> Syscall-Arg3 (R8)
-    mov     r9,  [rbp+30h]   ; C-Arg5 (from original caller's stack) -> Syscall-Arg4 (R9)
+    ; Marshal register-based arguments (shifted due to extra SYSCALL_ENTRY* parameter)
+    mov     r10, rdx              ; Syscall-Arg1 <- C-Arg2
+    mov     rdx, r8               ; Syscall-Arg2 <- C-Arg3
+    mov     r8, r9                ; Syscall-Arg3 <- C-Arg4
+    mov     r9, [rbp+30h]         ; Syscall-Arg4 <- C-Arg5 (from caller's stack)
 
-    ; — Dynamically marshal stack arguments using an argument-aware loop —
-    ; This prevents reading garbage from the caller's stack, which would cause
-    ; STATUS_INVALID_PARAMETER_MIX errors.
-    mov     r13d, [r12+8]   ; Load nArgs from SYSCALL_ENTRY into our preserved R13 register.
-    cmp     r13d, 4
-    jle     _DispatchSetup  ; If 4 or fewer args, no stack marshalling is needed.
-    
-    sub     r13d, 4         ; R13d now holds the exact count of stack args to move.
-    
-    ; Prepare pointers for the block move using our preserved registers.
-    lea     rdi, [rsp+20h]  ; RDI = Destination (Syscall-Arg 5's slot on our local stack).
-    lea     rsi, [rbp+38h]  ; RSI = Source (C-Arg 6's slot on the caller's stack).
-    
-    push    rcx             ; Temporarily save Syscall-Arg1, as REP MOVSQ uses RCX.
-    mov     ecx, r13d       ; Load the argument count into the loop counter.
-    rep     movsq           ; Execute the block move of QWORDs.
-    pop     rcx             ; Restore Syscall-Arg1.
+    ; Unconditionally marshal 8 stack arguments (covers max of 7 needed + 1 extra; garbage for fewer is harmless)
+    lea     rsi, [rbp+38h]        ; Source: C-Arg6 (Syscall-Arg5 position in caller's stack)
+    lea     rdi, [rsp+20h]        ; Destination: Syscall-Arg5 position in local stack
+    mov     rcx, 8                ; Copy 8 qwords (64 bytes)
+    rep     movsq                 ; Block copy (efficient and modular)
 
-_DispatchSetup:
-    ; — Final preparation for kernel transition —
-    ; Emulate the mandatory ntdll stub behavior to prevent STATUS_INVALID_HANDLE.
-    mov     r10, rcx        ; Copy Syscall-Arg1 from RCX to R10.
+    ; Prepare for kernel transition
+    movzx   eax, word ptr [rbx+12] ; Load SSN into EAX
+    mov     r11, [rbx]             ; Load gadget address
 
-    ; Load the SSN and gadget address.
-    movzx   eax, word ptr [r12+12] ; Load ssn from SYSCALL_ENTRY (offset 12).
-    mov     r11, [r12]             ; Load pSyscallGadget from SYSCALL_ENTRY (offset 0).
+    call    r11                    ; Dispatch to gadget (syscall; ret)
 
-    ; — Dispatch the syscall —
-    call    r11
-
-    ; — Epilogue: Cleanly unwind and return to C++ —
-    ; The NTSTATUS result is already in RAX, the correct return register.
-    add     rsp, 64         ; Deallocate local stack space.
-    pop     rsi             ; Restore all preserved registers in reverse order.
+    ; Epilogue: Restore stack and registers
+    add     rsp, 80h
+    pop     rsi
     pop     rdi
-    pop     r13
-    pop     r12
-    pop     rbp             ; Restore the caller's frame pointer.
+    pop     rbx
+    pop     rbp
     ret
 SyscallTrampoline ENDP
 END

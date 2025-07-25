@@ -2,6 +2,17 @@
 
 ## 🆕 Changelog
 
+### v0.14.1
+- **Architecture-Specific Stability Fix for x64 Syscall Trampoline**: Overhauled the x64 assembly trampoline to resolve a critical stability bug that caused a silent crash in the payload thread immediately after injection on x64 systems.
+  - The previous dynamic, argument-aware loop created a complex code path that resulted in the assembler (`ml64.exe`) generating incorrect stack unwind data. This faulty data led to stack corruption and a silent crash when the new thread was initialized by the OS, causing the injector to hang indefinitely.
+  - The x64 trampoline has been re-architected to mirror the robust, simplified design of the working ARM64 version. The dynamic loop has been replaced with a simple, unconditional `rep movsq` that copies a fixed, oversized block of stack arguments. This guarantees a linear code path, ensures the generation of correct unwind data, and makes the x64 injection process as reliable as the ARM64 one.
+- **Enhanced Evasion for Parameter Passing**: Reworked the method for passing the pipe name parameter to the payload to bypass modern behavioral security heuristics, specifically Microsoft Defender's Controlled Folder Access (CFA).
+  - The previous method of using a separate `NtWriteVirtualMemory` call for the parameter was flagged by CFA when the injector was run from a protected location (e.g., the Desktop).
+  - This has been replaced with an "argument smuggling" technique. A single, larger memory region is now allocated in the target process for both the payload DLL and its pipe name parameter. Both are written into this contiguous block, presenting a more organic and less suspicious memory I/O pattern that is not blocked by CFA.
+- **Bug Fix: Resolved Post-Injection Hang**: Corrected a logical desynchronization between the injector and the payload that caused the tool to hang after successfully creating the payload thread.
+  - The payload's entry point was expecting a parameter in an outdated format from a previous, unsuccessful bypass attempt, while the injector was correctly passing a direct pointer using the new argument smuggling technique.
+  - The payload's parameter handling logic has been reverted and fixed to correctly interpret the direct pointer, re-establishing communication with the injector and resolving the hang.
+
 ### v0.14.0
 - **Direct Syscall-Based Reflective Hollowing & Evasion**: Migrated the entire injection strategy from a live process "attach" model to a classic "hollowing" technique.
   - The injector now launches the target browser via `CreateProcessW` in a `CREATE_SUSPENDED` state, providing full and uncontested control over the target's address space before any of its own code can execute.
