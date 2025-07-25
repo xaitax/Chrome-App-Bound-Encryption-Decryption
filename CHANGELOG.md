@@ -2,6 +2,13 @@
 
 ## 🆕 Changelog
 
+### v0.14.2
+- **Bug Fix: Corrected Cookie Decryption Payload Handling**: Resolved a critical regression where encrypted cookie values were not being correctly parsed after decryption.
+  - The recent architectural refactor to a data-driven configuration (`v0.14.1`) inadvertently omitted a crucial processing step specific to cookie payloads. Unlike passwords or payment data, the decrypted plaintext for a cookie contains a 32-byte metadata header that must be stripped to reveal the actual cookie value.
+- **Feature Enhancement: Expanded Cookie Data Extraction**: The tool now extracts a richer set of cookie attributes, providing a more comprehensive data set for analysis.
+  - The SQLite query for cookies has been expanded to include `path`, `expires_utc`, `is_secure`, and `is_httponly`.
+  - The JSON output has been updated accordingly to include these new fields, converting the boolean flags to proper `true`/`false` values for improved usability.
+
 ### v0.14.1
 - **Architecture-Specific Stability Fix for x64 Syscall Trampoline**: Overhauled the x64 assembly trampoline to resolve a critical stability bug that caused a silent crash in the payload thread immediately after injection on x64 systems.
   - The previous dynamic, argument-aware loop created a complex code path that resulted in the assembler (`ml64.exe`) generating incorrect stack unwind data. This faulty data led to stack corruption and a silent crash when the new thread was initialized by the OS, causing the injector to hang indefinitely.

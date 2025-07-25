@@ -1,5 +1,5 @@
 ; syscall_trampoline_x64.asm
-; v0.14.1 (c) Alexander 'xaitax' Hagenah
+; v0.14.2 (c) Alexander 'xaitax' Hagenah
 ; Licensed under the MIT License. See LICENSE file in the project root for full license information.
 ;
 ; ABI-compliant x64 trampoline with unconditional marshalling for max arguments.
