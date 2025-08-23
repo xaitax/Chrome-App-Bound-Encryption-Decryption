@@ -39,10 +39,10 @@ jobs:
         include:
           - architecture: x64
             msvc_arch: x64
-            final_name: chrome_inject_x64.exe
+            final_name: chromelevator_x64.exe
           - architecture: arm64
             msvc_arch: x64_arm64 
-            final_name: chrome_inject_arm64.exe
+            final_name: chromelevator_arm64.exe
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -62,7 +62,7 @@ jobs:
       - name: Rename Final Executable for Artifact Upload
         shell: cmd
         run: |
-          rename chrome_inject.exe ${{ matrix.final_name }}
+          rename chromelevator.exe ${{ matrix.final_name }}
       - name: Upload Final Executable Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -110,8 +110,8 @@ jobs:
             The attached `.zip` file contains the final injector executable for all supported architectures.
 
             **Contents:**
-            - `chrome_inject_x64.exe`
-            - `chrome_inject_arm64.exe`
+            - `chromelevator_x64.exe`
+            - `chromelevator_arm64.exe`
           draft: false
           prerelease: false
           files: ${{ steps.zip_package.outputs.zip_path }}
