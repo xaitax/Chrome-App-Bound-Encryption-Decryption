@@ -2,6 +2,19 @@
 
 ## 🆕 Changelog
 
+### v0.15.0
+- **Multi-Browser Extraction with "all" Option**: New command-line option to automatically enumerate and extract data from all installed browsers in a single run.
+  - Added `chromelevator.exe all` option that discovers all installed browsers (Chrome, Edge, Brave).
+  - Automatically handles any combination of installed browsers, gracefully skipping those not found.
+- **Dynamic Browser Path Discovery via Registry Syscalls**: Eliminated all hard-coded browser installation paths in favor of runtime Registry enumeration using direct syscalls.
+  - Added new Registry syscalls: `NtOpenKey`, `NtQueryValueKey`, and `NtEnumerateKey` to the direct syscall engine, enabling stealthy Registry access without Win32 API dependencies.
+  - Implemented `BrowserPathResolver` class that queries `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\<browser.exe>` using NT native paths (`\Registry\Machine\...`).
+  - Supports both 64-bit and 32-bit (WOW6432Node) Registry views to ensure browser discovery across all installation types.
+- **Advanced Gadget Detection**: Extended search to 64 bytes, added hook pattern skipping (e.g., jmp detection) for better evasion of inline EDR hooks.
+- **Redesigned Output Formatting**: Completely redesigned the console output for cleaner, more professional appearance.
+- **Resilient Decryption**: Implemented graceful error handling for GCM blobs, skipping invalid prefixes (e.g., non-"v20") to prevent process termination.
+- **Conditional File Output**: Modified data extractor to write JSON files only if decrypted data is present, eliminating empty `[]` files from the output.
+
 ### v0.14.2
 - **Bug Fix: Corrected Cookie Decryption Payload Handling**: Resolved a critical regression where encrypted cookie values were not being correctly parsed after decryption.
   - The recent architectural refactor inadvertently omitted a crucial processing step specific to cookie payloads. Unlike passwords or payment data, the decrypted plaintext for a cookie contains a 32-byte metadata header that must be stripped to reveal the actual cookie value.

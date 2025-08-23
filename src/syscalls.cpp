@@ -1,5 +1,5 @@
 // syscalls.cpp
-// v0.14.2 (c) Alexander 'xaitax' Hagenah
+// v0.15.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include "syscalls.h"
@@ -20,7 +20,7 @@ static void debug_print(const std::string &msg)
 {
     if (g_verbose_syscalls)
     {
-        std::cout << "[#] [Syscalls] " << msg << std::endl;
+        std::cout << "[#] " << msg << std::endl;
     }
 }
 
@@ -41,9 +41,16 @@ namespace
 
     PVOID FindSyscallGadget_x64(PVOID pFunction)
     {
-        for (DWORD i = 0; i <= 20; ++i)
+        for (DWORD i = 0; i <= 64; ++i)
         {
             auto current_addr = reinterpret_cast<PBYTE>(pFunction) + i;
+
+            if (*current_addr == 0xE9) // jmp rel32
+            {
+                i += 4;
+                continue;
+            }
+
             if (*reinterpret_cast<PWORD>(current_addr) == 0x050F && *(current_addr + 2) == 0xC3)
             {
                 return current_addr;
@@ -54,10 +61,16 @@ namespace
 
     PVOID FindSvcGadget_ARM64(PVOID pFunction)
     {
-        for (DWORD i = 0; i <= 20; i += 4)
+        for (DWORD i = 0; i <= 64; i += 4)
         {
             auto current_addr = reinterpret_cast<PBYTE>(pFunction) + i;
             DWORD instruction = *reinterpret_cast<PDWORD>(current_addr);
+
+            if ((instruction & 0xFC000000) == 0x14000000) // B <offset>
+            {
+                continue;
+            }
+
             if ((instruction & 0xFF000000) == 0xD4000000 && *reinterpret_cast<PDWORD>(current_addr + 4) == 0xD65F03C0)
             {
                 return current_addr;
@@ -121,7 +134,11 @@ BOOL InitializeSyscalls(bool is_verbose)
         {"ZwGetContextThread", {&g_syscall_stubs.NtGetContextThread, 2}},
         {"ZwSetContextThread", {&g_syscall_stubs.NtSetContextThread, 2}},
         {"ZwResumeThread", {&g_syscall_stubs.NtResumeThread, 2}},
-        {"ZwFlushInstructionCache", {&g_syscall_stubs.NtFlushInstructionCache, 3}}};
+        {"ZwFlushInstructionCache", {&g_syscall_stubs.NtFlushInstructionCache, 3}},
+        {"ZwClose", {&g_syscall_stubs.NtClose, 1}},
+        {"ZwOpenKey", {&g_syscall_stubs.NtOpenKey, 3}},
+        {"ZwQueryValueKey", {&g_syscall_stubs.NtQueryValueKey, 6}},
+        {"ZwEnumerateKey", {&g_syscall_stubs.NtEnumerateKey, 6}}};
 
     for (WORD i = 0; i < sortedSyscalls.size(); ++i)
     {
@@ -159,29 +176,33 @@ BOOL InitializeSyscalls(bool is_verbose)
 
     if (all_found)
     {
-        debug_print("Successfully initialized all direct syscall stubs.");
+        int regSyscalls = 0;
+        if (g_syscall_stubs.NtOpenKey.pSyscallGadget)
+            regSyscalls++;
+        if (g_syscall_stubs.NtQueryValueKey.pSyscallGadget)
+            regSyscalls++;
+        if (g_syscall_stubs.NtEnumerateKey.pSyscallGadget)
+            regSyscalls++;
+
+        debug_print("Initialized " + std::to_string(required_syscalls.size()) + " syscall stubs.");
+
+        for (const auto &pair : required_syscalls)
+        {
+            if (!pair.second.first->pSyscallGadget)
+            {
+                debug_print("  WARNING: " + std::string(pair.first + 2) + " gadget not found");
+            }
+        }
     }
     else
     {
-        debug_print("ERROR: One or more required syscall gadgets could not be found.");
-    }
-
-    for (const auto &pair : required_syscalls)
-    {
-        const char *name = pair.first;
-        const auto *stub = pair.second.first;
-        std::stringstream ss;
-        ss << "  - " << (name + 2);
-
-        if (stub->pSyscallGadget)
+        debug_print("ERROR: One or more required syscall gadgets could not be found:");
+        for (const auto &pair : required_syscalls)
         {
-            ss << " (SSN: " << stub->ssn << ") -> Gadget: 0x" << std::hex << reinterpret_cast<uintptr_t>(stub->pSyscallGadget);
-            debug_print(ss.str());
-        }
-        else
-        {
-            ss << " -> FAILED to find required gadget.";
-            debug_print(ss.str());
+            if (!pair.second.first->pSyscallGadget)
+            {
+                debug_print("  - " + std::string(pair.first + 2) + " FAILED");
+            }
         }
     }
 
@@ -261,4 +282,24 @@ NTSTATUS NtResumeThread_syscall(HANDLE ThreadHandle, PULONG SuspendCount)
 NTSTATUS NtFlushInstructionCache_syscall(HANDLE ProcessHandle, PVOID BaseAddress, ULONG NumberOfBytesToFlush)
 {
     return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtFlushInstructionCache, ProcessHandle, BaseAddress, NumberOfBytesToFlush);
+}
+
+NTSTATUS NtClose_syscall(HANDLE Handle)
+{
+    return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtClose, Handle);
+}
+
+NTSTATUS NtOpenKey_syscall(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes)
+{
+    return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtOpenKey, KeyHandle, DesiredAccess, ObjectAttributes);
+}
+
+NTSTATUS NtQueryValueKey_syscall(HANDLE KeyHandle, PUNICODE_STRING_SYSCALLS ValueName, KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass, PVOID KeyValueInformation, ULONG Length, PULONG ResultLength)
+{
+    return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtQueryValueKey, KeyHandle, ValueName, KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
+}
+
+NTSTATUS NtEnumerateKey_syscall(HANDLE KeyHandle, ULONG Index, KEY_INFORMATION_CLASS KeyInformationClass, PVOID KeyInformation, ULONG Length, PULONG ResultLength)
+{
+    return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtEnumerateKey, KeyHandle, Index, KeyInformationClass, KeyInformation, Length, ResultLength);
 }

@@ -1,6 +1,6 @@
 // reflective_loader.c
-// v0.14.2 (c) Alexander 'xaitax' Hagenah
-// Licensed under the MIT License. See LICENSE file in the project root for full license information.
+// v0.15.0 (c) Alexander 'xaitax' Hagenah
+// Licensed under the MIT License. See LICENSE file in the project root for full license information..
 
 #include <windows.h>
 #include "reflective_loader.h"

