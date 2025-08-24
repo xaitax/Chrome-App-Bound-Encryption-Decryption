@@ -1,4 +1,4 @@
-# ChromeElevator <sup><sub><sup>(`Chrome App-Bound Encryption Decryption`)
+# ChromElevator <sup><sub><sup>(`Chrome App-Bound Encryption Decryption`)
 
 ## 🚀 Overview
 
