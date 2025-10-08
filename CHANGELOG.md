@@ -2,6 +2,26 @@
 
 ## 🆕 Changelog
 
+### v0.16.0
+- **Syscall Obfuscation**: Added runtime protection for the syscall engine.
+  - Syscall Service Numbers (SSNs) and gadget pointers are XOR-encrypted in memory.
+  - Encryption keys are derived from runtime system state, making each execution unique.
+  - Protects all syscalls from memory scanning.
+- **IPC Hardening**: Replaced GUID-based pipe names with browser-specific patterns.
+  - Names generated from process/thread IDs and tick count.
+- **Browser Fingerprinting**: Optional extraction of comprehensive browser metadata (use `--fingerprint` or `-f` flag).
+  - Browser version, executable path, user data path, and profile count.
+  - Update channel (stable/beta/dev/canary) and default search engine.
+  - Security features: autofill status, password manager, safe browsing.
+  - Extension details: count and IDs of all installed extensions.
+  - System information: computer name, Windows username, extraction timestamp.
+  - Sync/sign-in status and enterprise management detection.
+  - Outputs JSON report to `fingerprint.json`.
+  - Mimics legitimate browser IPC to evade monitoring tools.
+- **Bug Fixes**: 
+  - Fixed race condition in pipe communication that caused extraction failures in non-verbose mode.
+  - Multi-profile extraction now continues on individual profile failures.
+
 ### v0.15.0
 - **Multi-Browser Extraction with "all" Option**: New command-line option to automatically enumerate and extract data from all installed browsers in a single run.
   - Added `chromelevator.exe all` option that discovers all installed browsers (Chrome, Edge, Brave).

