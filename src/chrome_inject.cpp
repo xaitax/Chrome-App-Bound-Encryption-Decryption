@@ -37,7 +37,7 @@
 namespace
 {
     constexpr DWORD DLL_COMPLETION_TIMEOUT_MS = 60000;
-    constexpr const char *APP_VERSION = "v0.16.0";
+    constexpr const char *APP_VERSION = "v0.16.1";
 
     const uint8_t g_decryptionKey[32] = {
         0x1B, 0x27, 0x55, 0x64, 0x73, 0x8B, 0x9F, 0x4D,

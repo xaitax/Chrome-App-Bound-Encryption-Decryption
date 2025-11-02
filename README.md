@@ -30,7 +30,7 @@ This tool's effectiveness is rooted in a combination of modern, evasion-focused 
 
 ### Core Functionality
 
-- 🔓 Full user-mode decryption of cookies, passwords, and payment methods.
+- 🔓 Full user-mode decryption of cookies, passwords, payment methods, and IBANs.
 - 📁 Discovers and processes all user profiles (Default, Profile 1, etc.).
 - 📝 Exports all extracted data into structured JSON files, organized by profile.
 - 🔍 Browser Fingerprinting of browser metadata and system information.
@@ -60,9 +60,9 @@ This tool's effectiveness is rooted in a combination of modern, evasion-focused 
 
 | Browser            | Tested Version (x64 & ARM64) |
 | ------------------ | ---------------------------- |
-| **Google Chrome**  | 141.0.7390.66                |
-| **Brave**          | 1.83.109 (141.0.7390.55)     |
-| **Microsoft Edge** | 141.0.3537.57                |
+| **Google Chrome**  | 142.0.7444.60                |
+| **Brave**          | 1.84.132 (142.0.7444.60)     |
+| **Microsoft Edge** | 142.0.3595.53                |
 
 ## 🔬 Technical Workflow
 
@@ -169,7 +169,7 @@ _________ .__                         ___________.__                       __
         \/     \/                   \/        \/           \/           \/
 
  Direct Syscall-Based Reflective Hollowing
- x64 & ARM64 | v0.16.0 by @xaitax
+ x64 & ARM64 | v0.16.1 by @xaitax
 
 [*] Processing 3 browser(s):
 
@@ -203,7 +203,7 @@ _________ .__                         ___________.__                       __
         \/     \/                   \/        \/           \/           \/
 
  Direct Syscall-Based Reflective Hollowing
- x64 & ARM64 | v0.16.0 by @xaitax
+ x64 & ARM64 | v0.16.1 by @xaitax
 
 [#] Found and sorted 489 Zw* functions.
 [#] Initialized 19 syscall stubs (with obfuscation).
@@ -213,14 +213,14 @@ _________ .__                         ___________.__                       __
 [#] Scanning for and terminating browser network services...
 [#] Creating suspended Chrome process.
 [#] Target executable path: C:\Program Files\Google\Chrome\Application\chrome.exe
-[#] Created suspended process PID: 21708
+[#] Created suspended process PID: 6088
 [#] Architecture match: Injector=ARM64, Target=ARM64
-[#] Named pipe server created: \\.\pipe\chrome.sync.9707.22756.1BE8
+[#] Named pipe server created: \\.\pipe\chrome.nacl.3150_4B01
 [#] Loading and decrypting payload DLL.
 [#] Parsing payload PE headers for ReflectiveLoader.
-[#] ReflectiveLoader found at file offset: 0x17930
+[#] ReflectiveLoader found at file offset: 0x14fb0
 [#] Allocating memory for payload in target process.
-[#] Combined memory for payload and parameters allocated at: 0x243d93a0000
+[#] Combined memory for payload and parameters allocated at: 0x2d6fec10000
 [#] Writing payload DLL to target process.
 [#] Writing pipe name parameter into the same allocation.
 [#] Changing payload memory protection to executable.
@@ -232,7 +232,7 @@ _________ .__                         ___________.__                       __
 [#] Sent message to pipe: VERBOSE_TRUE
 [#] Sent message to pipe: FINGERPRINT_TRUE
 [#] Sent message to pipe: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output
-[#] Waiting for payload execution. (Pipe: \\.\pipe\chrome.sync.9707.22756.1BE8)
+[#] Waiting for payload execution. (Pipe: \\.\pipe\chrome.nacl.3150_4B01)
 
 [*] Decryption process started for Chrome
 [+] COM library initialized (APARTMENTTHREADED).
@@ -242,12 +242,13 @@ _________ .__                         ___________.__                       __
 [*] Discovering browser profiles in: C:\Users\ah\AppData\Local\Google\Chrome\User Data
 [+] Found 2 profile(s).
 [*] Processing profile: Default
-     [*] 380 cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\cookies.json
+     [*] 378 cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\cookies.json
      [*] 1 passwords extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\passwords.json
 [*] Processing profile: Profile 1
-     [*] 131 cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\cookies.json
+     [*] 622 cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\cookies.json
      [*] 2 passwords extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\passwords.json
      [*] 1 payments extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\payments.json
+     [*] 1 iban extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\iban.json
 [*] Extraction complete: 2 successful, 0 failed.
 [*] Extracting browser fingerprint data...
 [*] Discovering browser profiles in: C:\Users\ah\AppData\Local\Google\Chrome\User Data
@@ -256,7 +257,7 @@ _________ .__                         ___________.__                       __
 [#] Payload completion signal received.
 
 [#] Payload signaled completion or pipe interaction ended.
-[#] Terminating browser PID=21708 via direct syscall.
+[#] Terminating browser PID=6088 via direct syscall.
 [#] Chrome terminated by injector.
 [+] Extraction completed successfully
 ```
@@ -273,6 +274,7 @@ Example paths (assuming default output location):\*\*
 - 🍪 **Cookies (Chrome Default profile):** .\output\Chrome\Default\cookies.json
 - 🔑 **Passwords (Edge Profile 1):** .\output\Edge\Profile 1\passwords.json
 - 💳 **Payment Methods (Brave Default profile):** .\output\Brave\Default\payments.json
+- 🏦 **IBANs (Chrome Profile 1):** .\output\Chrome\Profile 1\iban.json
 
 ### 🍪 Cookie Extraction
 
@@ -335,6 +337,19 @@ Each payment file is a JSON array of objects:
     "cvc": "•••"
   }
   …
+]
+```
+
+### 🏦 IBAN Extraction
+
+Each IBAN file is a JSON array of objects:
+
+```json
+[
+  {
+    "nickname": "UK Test",
+    "value": "GB33BUKB20201555555555"
+  }
 ]
 ```
 

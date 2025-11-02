@@ -2,6 +2,11 @@
 
 ## 🆕 Changelog
 
+### v0.16.1
+- **New Feature: IBAN Extraction**: Added support for extracting International Bank Account Numbers (IBANs) (thanks [raphaelthief](https://github.com/raphaelthief)!)
+  - Extracts encrypted IBAN values and associated nicknames.
+  - Outputs to `iban.json` in the browser profile directory.
+
 ### v0.16.0
 - **Syscall Obfuscation**: Added runtime protection for the syscall engine.
   - Syscall Service Numbers (SSNs) and gadget pointers are XOR-encrypted in memory.

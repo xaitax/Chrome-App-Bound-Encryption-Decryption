@@ -1,5 +1,5 @@
 // syscalls_obfuscation.h
-// v0.16.0 (c) Alexander 'xaitax' Hagenah
+// v0.16.1 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #ifndef SYSCALLS_OBFUSCATION_H

