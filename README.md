@@ -64,6 +64,22 @@ This tool's effectiveness is rooted in a combination of modern, evasion-focused 
 | **Brave**          | 1.84.132 (142.0.7444.60)     |
 | **Microsoft Edge** | 142.0.3595.53                |
 
+## 🔍 Feature Support Matrix
+
+This matrix outlines the extraction capabilities for each supported browser.
+
+| Feature              | Google Chrome          | Brave                  | Microsoft Edge                          |
+|----------------------|------------------------|------------------------|-----------------------------------------|
+| **Cookies**         | ✅ ABE                | ✅ ABE                | ✅ ABE                                 |
+| **Passwords**       | ✅ ABE                | ✅ ABE                | ⚠️ DPAPI v10 (ABE not yet implemented) |
+| **Payment Methods** | ✅ ABE                | ✅ ABE                | ✅ ABE                                 |
+| **IBANs**           | ✅ ABE                | ✅ ABE                | ❌ Not existing                        |
+
+**Encryption Method Notes:**
+- **ABE (App-Bound Encryption):** Using AES-256-GCM with browser-specific master keys decrypted via COM interfaces.
+- **DPAPI v10:** Legacy Windows Data Protection API encryption. Microsoft Edge has not yet transitioned passwords to ABE, so older DPAPI-based decryption methods are still required and functional.
+- Cookies & payments use ABE across all browsers. IBANs are not supported in Microsoft Edge.
+
 ## 🔬 Technical Workflow
 
 The tool's execution is focused on stealth and efficiency, built around a **Direct Syscall-based Reflective Hollowing** process. This approach ensures that few high-level API calls are made and that the payload operates from within a legitimate, newly created browser process.
