@@ -6,6 +6,7 @@
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%20x64%20%7C%20ARM64-lightgrey)
 ![Languages](https://img.shields.io/badge/code-C%2B%2B%20%7C%20ASM-9cf)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/xaitax/Chrome-App-Bound-Encryption-Decryption)
 
 A post-exploitation tool demonstrating a complete, in-memory bypass of Chromium's **App-Bound Encryption (ABE)**. This project utilizes **Direct Syscall-based Reflective Process Hollowing** to launch a legitimate browser process in a suspended state, stealthily injecting a payload to hijack its identity and security context. This **Living-off-the-Land (LOTL)** technique that subverts the browser's own security model. The fileless approach allows the tool to operate entirely from memory, bypassing user-land API hooks to decrypt and exfiltrate sensitive user data (cookies, passwords, payments) from modern Chromium browsers.
 
