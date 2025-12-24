@@ -63,7 +63,12 @@ call :compile_payload
 call :encrypt_payload
 call :compile_resource
 call :compile_injector
-goto :done
+echo.
+echo =============================================================================
+echo [√] Build Complete: %FINAL_EXE_NAME%
+for %%A in (".\%FINAL_EXE_NAME%") do echo [√] Binary Size: %%~zA bytes
+echo =============================================================================
+goto :eof
 
 :: =============================================================================
 :: BUILD SUBROUTINES
@@ -149,7 +154,7 @@ del /q "%BUILD_DIR%\*.exp" 2>nul
 del /q "%BUILD_DIR%\*.res" 2>nul
 del /q "%BUILD_DIR%\%ENCRYPTOR_EXE_NAME%" 2>nul
 
-:: Clean up root directory artifacts
+:: Clean up root directory artifacts (only in full build, not CI)
 del /q "*.obj" 2>nul
 
 echo [+] Cleaned intermediate object files
