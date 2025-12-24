@@ -1,14 +1,17 @@
-// syscalls.h
-// v0.16.1 (c) Alexander 'xaitax' Hagenah
+// (c) Alexander 'xaitax' Hagenah
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
-#ifndef SYSCALLS_H
-#define SYSCALLS_H
+#pragma once
 
 #include <Windows.h>
+#include "../core/common.hpp"
 
 #ifndef NTSTATUS
 using NTSTATUS = LONG;
+#endif
+
+#ifndef STATUS_SUCCESS
+#define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
 #endif
 
 #ifndef STATUS_BUFFER_TOO_SMALL
@@ -23,44 +26,7 @@ using NTSTATUS = LONG;
 #define OBJ_CASE_INSENSITIVE 0x00000040L
 #endif
 
-#ifndef REG_SZ
-#define REG_SZ 1
-#endif
-
-#ifndef REG_EXPAND_SZ
-#define REG_EXPAND_SZ 2
-#endif
-
-struct SYSCALL_ENTRY
-{
-    PVOID pSyscallGadget;
-    UINT nArgs;
-    WORD ssn;
-};
-
-struct SYSCALL_STUBS
-{
-    SYSCALL_ENTRY NtAllocateVirtualMemory;
-    SYSCALL_ENTRY NtWriteVirtualMemory;
-    SYSCALL_ENTRY NtReadVirtualMemory;
-    SYSCALL_ENTRY NtCreateThreadEx;
-    SYSCALL_ENTRY NtFreeVirtualMemory;
-    SYSCALL_ENTRY NtProtectVirtualMemory;
-    SYSCALL_ENTRY NtOpenProcess;
-    SYSCALL_ENTRY NtGetNextProcess;
-    SYSCALL_ENTRY NtTerminateProcess;
-    SYSCALL_ENTRY NtQueryInformationProcess;
-    SYSCALL_ENTRY NtUnmapViewOfSection;
-    SYSCALL_ENTRY NtGetContextThread;
-    SYSCALL_ENTRY NtSetContextThread;
-    SYSCALL_ENTRY NtResumeThread;
-    SYSCALL_ENTRY NtFlushInstructionCache;
-    SYSCALL_ENTRY NtClose;
-    SYSCALL_ENTRY NtOpenKey;
-    SYSCALL_ENTRY NtQueryValueKey;
-    SYSCALL_ENTRY NtEnumerateKey;
-};
-
+// NT Structures required for syscalls
 struct UNICODE_STRING_SYSCALLS
 {
     USHORT Length;
@@ -79,6 +45,13 @@ struct OBJECT_ATTRIBUTES
     PVOID SecurityQualityOfService;
 };
 using POBJECT_ATTRIBUTES = OBJECT_ATTRIBUTES *;
+
+struct CLIENT_ID
+{
+    HANDLE UniqueProcess;
+    HANDLE UniqueThread;
+};
+using PCLIENT_ID = CLIENT_ID *;
 
 enum PROCESSINFOCLASS
 {
@@ -127,13 +100,6 @@ struct PEB
 };
 using PPEB = PEB *;
 
-struct CLIENT_ID
-{
-    HANDLE UniqueProcess;
-    HANDLE UniqueThread;
-};
-using PCLIENT_ID = CLIENT_ID *;
-
 enum KEY_VALUE_INFORMATION_CLASS
 {
     KeyValueBasicInformation = 0,
@@ -150,15 +116,6 @@ struct KEY_VALUE_PARTIAL_INFORMATION
 };
 using PKEY_VALUE_PARTIAL_INFORMATION = KEY_VALUE_PARTIAL_INFORMATION *;
 
-struct KEY_BASIC_INFORMATION
-{
-    LARGE_INTEGER LastWriteTime;
-    ULONG TitleIndex;
-    ULONG NameLength;
-    WCHAR Name[1];
-};
-using PKEY_BASIC_INFORMATION = KEY_BASIC_INFORMATION *;
-
 enum KEY_INFORMATION_CLASS
 {
     KeyBasicInformation = 0
@@ -174,28 +131,44 @@ inline void InitializeObjectAttributes(POBJECT_ATTRIBUTES p, PUNICODE_STRING_SYS
     p->SecurityQualityOfService = nullptr;
 }
 
-#ifndef KEY_QUERY_VALUE
-#define KEY_QUERY_VALUE (0x0001)
-#endif
+// Syscall Entry Structure - MUST MATCH ASM EXPECTATIONS
+struct SYSCALL_ENTRY
+{
+    PVOID pSyscallGadget;
+    UINT nArgs;
+    WORD ssn;
+};
 
-#ifndef KEY_READ
-#define KEY_READ (0x20019)
-#endif
-
-#ifndef KEY_WOW64_64KEY
-#define KEY_WOW64_64KEY (0x0100)
-#endif
-
-#ifndef KEY_WOW64_32KEY
-#define KEY_WOW64_32KEY (0x0200)
-#endif
+// Syscall Stubs Structure - MUST MATCH ASM EXPECTATIONS
+struct SYSCALL_STUBS
+{
+    SYSCALL_ENTRY NtAllocateVirtualMemory;
+    SYSCALL_ENTRY NtWriteVirtualMemory;
+    SYSCALL_ENTRY NtReadVirtualMemory;
+    SYSCALL_ENTRY NtCreateThreadEx;
+    SYSCALL_ENTRY NtFreeVirtualMemory;
+    SYSCALL_ENTRY NtProtectVirtualMemory;
+    SYSCALL_ENTRY NtOpenProcess;
+    SYSCALL_ENTRY NtGetNextProcess;
+    SYSCALL_ENTRY NtTerminateProcess;
+    SYSCALL_ENTRY NtQueryInformationProcess;
+    SYSCALL_ENTRY NtUnmapViewOfSection;
+    SYSCALL_ENTRY NtGetContextThread;
+    SYSCALL_ENTRY NtSetContextThread;
+    SYSCALL_ENTRY NtResumeThread;
+    SYSCALL_ENTRY NtFlushInstructionCache;
+    SYSCALL_ENTRY NtClose;
+    SYSCALL_ENTRY NtOpenKey;
+    SYSCALL_ENTRY NtQueryValueKey;
+    SYSCALL_ENTRY NtEnumerateKey;
+};
 
 extern "C"
 {
+    // Global instance used by ASM
     extern SYSCALL_STUBS g_syscall_stubs;
 
-    [[nodiscard]] BOOL InitializeSyscalls(bool is_verbose, bool enable_obfuscation = true);
-
+    // Syscall prototypes
     NTSTATUS NtAllocateVirtualMemory_syscall(HANDLE, PVOID *, ULONG_PTR, PSIZE_T, ULONG, ULONG);
     NTSTATUS NtWriteVirtualMemory_syscall(HANDLE, PVOID, PVOID, SIZE_T, PSIZE_T);
     NTSTATUS NtReadVirtualMemory_syscall(HANDLE, PVOID, PVOID, SIZE_T, PSIZE_T);
@@ -217,4 +190,7 @@ extern "C"
     NTSTATUS NtEnumerateKey_syscall(HANDLE, ULONG, KEY_INFORMATION_CLASS, PVOID, ULONG, PULONG);
 }
 
-#endif
+namespace Sys {
+    // Initialization function
+    [[nodiscard]] bool InitApi(bool verbose);
+}

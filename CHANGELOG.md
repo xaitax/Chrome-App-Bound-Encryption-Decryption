@@ -2,6 +2,19 @@
 
 ## 🆕 Changelog
 
+### v0.17.0
+- **Full Codebase Refactor**: Completely rewrote the project into a modern, modular C++ architecture.
+- **Compile-Time Key Derivation**: Eliminated static encryption keys from the binary.
+  - Keys derived at compile-time from version tag + build date via FNV-1a/MurmurHash3 cascade.
+  - Each build produces unique encryption keys automatically.
+- **Hash-Based Syscall Resolution**: Eliminated plaintext syscall names from the binary.
+  - All syscall names replaced with compile-time DJB2 hashes.
+- **Reflective Loader Enhancements**:
+  - **PE Header Destruction**: After payload mapping, PE headers (MZ/PE signatures) are overwritten with pseudo-random data.
+  - **Syscall-Based Memory Operations**: Now uses direct syscalls for `NtAllocateVirtualMemory` and `NtProtectVirtualMemory`.
+- **Enhanced Fingerprint Extraction**: More comprehensive browser metadata collection (`-f` flag).
+- **Redesigned Console Output**: Cleaner visual hierarchy with box-drawing tree structure.
+
 ### v0.16.1
 - **New Feature: IBAN Extraction**: Added support for extracting International Bank Account Numbers (IBANs) (thanks [raphaelthief](https://github.com/raphaelthief)!)
   - Extracts encrypted IBAN values and associated nicknames.
