@@ -71,18 +71,13 @@ This tool's effectiveness is rooted in a combination of modern, evasion-focused 
 
 This matrix outlines the extraction capabilities for each supported browser.
 
-| Feature              | Google Chrome          | Brave                  | Microsoft Edge                          |
+| Feature              | Google Chrome          | Microsoft Edge                  | Brave                          |
 |----------------------|------------------------|------------------------|-----------------------------------------|
 | **Cookies**         | ✅ ABE                | ✅ ABE                | ✅ ABE                                 |
 | **Passwords**       | ✅ ABE                | ✅ ABE                | ✅ ABE                                 |
 | **Payment Methods** | ✅ ABE                | ✅ ABE                | ✅ ABE                                 |
-| **IBANs**           | ✅ ABE                | ✅ ABE                | ❌ N/A                                 |
+| **IBANs**           | ✅ ABE                | ❌ N/A                | ✅ ABE                                 |
 | **Auth Tokens**     | ✅ Google             | ❌ N/A                | ❌ N/A                                 |
-
-**Encryption Method Notes:**
-- **ABE (App-Bound Encryption):** Using AES-256-GCM with browser-specific master keys decrypted via COM interfaces.
-- **DPAPI v10:** Legacy Windows Data Protection API encryption. Microsoft Edge has not yet transitioned passwords to ABE, so older DPAPI-based decryption methods are still required and functional.
-- Cookies & payments use ABE across all browsers. IBANs are not supported in Microsoft Edge.
 
 ## 🔬 Technical Workflow
 
