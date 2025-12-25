@@ -2,6 +2,12 @@
 
 ## 🆕 Changelog
 
+### v0.17.1
+- **Google Auth Token Extraction**: Added support for extracting Google OAuth2 Refresh Tokens.
+  - Extracts and decrypts tokens used for Chrome Sync and Google services.
+  - Outputs to `tokens.json` in the browser profile directory.
+- **Cookie Extraction**: Added `expires` timestamp and `path` fields to the cookie extraction output, enabling identification of expired cookies.
+
 ### v0.17.0
 - **Full Codebase Refactor**: Completely rewrote the project into a modern, modular C++ architecture.
 - **Compile-Time Key Derivation**: Eliminated static encryption keys from the binary.

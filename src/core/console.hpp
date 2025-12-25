@@ -115,7 +115,7 @@ namespace Core {
         }
 
         // Summary line
-        void Summary(int cookies, int passwords, int cards, int ibans, int profiles, const std::string& outputPath) const {
+        void Summary(int cookies, int passwords, int cards, int ibans, int tokens, int profiles, const std::string& outputPath) const {
             SetConsoleTextAttribute(m_hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
             std::cout << "  \xB3" << std::endl;
             std::cout << "  \xC0\xC4\xC4 ";
@@ -126,6 +126,7 @@ namespace Core {
             if (passwords > 0) parts.push_back(std::to_string(passwords) + " passwords");
             if (cards > 0) parts.push_back(std::to_string(cards) + " cards");
             if (ibans > 0) parts.push_back(std::to_string(ibans) + " IBANs");
+            if (tokens > 0) parts.push_back(std::to_string(tokens) + " tokens");
             
             for (size_t i = 0; i < parts.size(); i++) {
                 std::cout << parts[i];

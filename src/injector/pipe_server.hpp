@@ -16,6 +16,7 @@ namespace Injector {
         int passwords = 0;
         int cards = 0;
         int ibans = 0;
+        int tokens = 0;
         int profiles = 0;
     };
 
