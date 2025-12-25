@@ -56,7 +56,7 @@ This tool's effectiveness is rooted in a combination of modern, evasion-focused 
 - 🚀 **Standalone Operation:** Automatically creates a new browser process to host the payload, requiring no pre-existing running instances.
 - 📁 Customizable output directory for extracted data.
 
-<img width="2142" height="1720" alt="image" src="https://github.com/user-attachments/assets/7780fa3c-730b-493a-b5f7-b202c7a59420" />
+<img width="1072" height="992" alt="image" src="https://github.com/user-attachments/assets/d3104336-f5e6-43e3-9043-01a5d3e7028f" />
 
 
 ## 📦 Supported & Tested Versions
