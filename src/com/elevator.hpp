@@ -63,6 +63,13 @@ namespace Com {
         virtual HRESULT STDMETHODCALLTYPE DecryptData(const BSTR, BSTR*, DWORD*) = 0;
     };
 
+    MIDL_INTERFACE("05EB264E-4D60-4F34-ADB7-1F983E930A79")
+    IEdgeElevator3EdgeFinal : public IEdgeIntermediateElevator {
+    public:
+        virtual HRESULT STDMETHODCALLTYPE StoreDMToken(void) = 0;
+        virtual HRESULT STDMETHODCALLTYPE DeleteDMToken(void) = 0;
+    };
+
     MIDL_INTERFACE("C9C2B807-7731-4F34-81B7-44FF7779522B")
     IEdgeElevatorFinal : public IEdgeIntermediateElevator{};
 

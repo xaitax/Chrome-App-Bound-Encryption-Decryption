@@ -149,8 +149,9 @@ BROWSER_SERVICES = {
 # Note: These are the IIDs that have proper TypeLib registration for COM marshaling
 KNOWN_PRIMARY_IIDS = {
     "chrome": ["{463ABECF-410D-407F-8AF5-0DF35A005CC8}"],
-    "edge": ["{C9C2B807-7731-4F34-81B7-44FF7779522B}",
-             "{8F7B6792-784D-4047-845D-1782EFBEF205}"],   # IElevatorEdge (v1), IElevator2Edge (v2)
+    "edge": ["{05EB264E-4D60-4F34-ADB7-1F983E930A79}",
+             "{8F7B6792-784D-4047-845D-1782EFBEF205}",
+             "{C9C2B807-7731-4F34-81B7-44FF7779522B}"],   # IElevatorEdge3 (v3), IElevator2Edge (v2), IElevatorEdge (v1)
     "brave": ["{F396861E-0C8E-4C71-8256-2FAE6D759CE9}",
               "{1BF5208B-295F-4992-B5F4-3A9BB6494838}"],   # IElevatorChrome (v1), IElevator2Chrome (v2)
     # Avast uses IElevatorChrome IID (base IElevator has broken TypeLib registration)
