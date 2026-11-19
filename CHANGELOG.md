@@ -2,6 +2,14 @@
 
 ## Changelog
 
+### v0.21.0
+
+* **Microsoft Edge 157+ (IElevatorEdge3)**: Edge stopped registering `IElevatorEdge` (`{C9C2B807-…}`) and `IElevator2Edge` (`{8F7B6792-…}`). Both stay in the typelib but fail activation with `E_NOINTERFACE`. Added the `IElevatorEdge3` (`{05EB264E-4D60-4F34-ADB7-1F983E930A79}`) stub, tried first with v2/v1 kept as fallback for older builds.
+  * Same `IElevatorEdgeBase` prefix, so `DecryptData` stays at vtable slot 8 (offset 64). The CLSID is unchanged.
+  * `IElevatorEdge3` adds `StoreDMToken` / `DeleteDMToken` after the base methods, not yet wired.
+
+* **Caller validation on Edge 157+**: `DecryptData` now fails with `0x8004B016` (`kValidationDidNotPass`) unless the calling process lives in the browser install directory. `…\Edge\Application\<version>\` is rejected, `…\Edge\Application\` is accepted — the version folder is trimmed before comparison.
+
 ### v0.20.0
 
 * **Critical Stealth Fix: Bootstrap Direct Syscalls** (thanks [@wrapdavid](https://github.com/wrapdavid) for the sharp-eyed report!): The reflective loader's bootstrap now correctly invokes direct syscalls for `NtAllocateVirtualMemory` and `NtProtectVirtualMemory` through the linked `SyscallTrampoline` assembly function.
